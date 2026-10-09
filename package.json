@@ -1,0 +1,14 @@
+{
+  "name": "qrempire",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch --disable-warning=ExperimentalWarning src/server/dev-server.ts",
+    "sim": "node src/sim/simulate.ts",
+    "check": "tsc"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
