@@ -1,16 +1,20 @@
 // World bootstrap shared by the dev server and the simulator.
 // Real deployments would load the location list from a JSON file of physical QR spots.
-import { rngFor, type LatLng, type LocationDef } from '../engine/index.ts';
+import { LOCATION_TYPES, rngFor, type LatLng, type LocationDef, type LocationType } from '../engine/index.ts';
 import type { GameService } from './game-service.ts';
 
-export const DEMO_CENTER: LatLng = { lat: 50.087, lng: 14.421 }; // Prague
+export const DEMO_CENTER: LatLng = { lat: 49.5868333, lng: 15.7536722 }; // near Přibyslav
 
 export function makeLocations(seed: number, center: LatLng = DEMO_CENTER, n = 60): Map<string, LocationDef> {
   const r = rngFor(seed, 'locations');
   const out = new Map<string, LocationDef>();
   for (let i = 0; i < n; i++) {
     const tier = (r.chance(0.1) ? 3 : r.chance(0.3) ? 2 : 1) as 1 | 2 | 3;
-    const loc = { id: `loc${i}`, name: `Spot ${i}`, tier, lat: center.lat + (r.next() - 0.5) * 0.12, lng: center.lng + (r.next() - 0.5) * 0.18 };
+    const type = r.pick(Object.keys(LOCATION_TYPES) as LocationType[]);
+    const loc: LocationDef = {
+      id: `loc${i}`, name: `${LOCATION_TYPES[type].name} ${i}`, type, tier,
+      lat: center.lat + (r.next() - 0.5) * 0.12, lng: center.lng + (r.next() - 0.5) * 0.18,
+    };
     out.set(loc.id, loc);
   }
   return out;

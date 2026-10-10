@@ -7,6 +7,20 @@
   <link rel="icon" href="data:," />
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css" />
   <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/maplibre-contour@0.1.1/dist/index.min.js"></script>
+  <!-- three.js for the 3D model layer; the import map resolves `import ... from 'three'` -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.186.1/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.186.1/examples/jsm/"
+      }
+    }
+  </script>
+  <!-- Fonts for our own label overlay; add a family here and to LABEL_FONTS in src/client/labels.ts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Alegreya:ital,wght@0,400;0,600;0,700;1,400&family=Cinzel:wght@400;600;700&family=IM+Fell+English:ital@0;1&family=Inter:ital,wght@0,400;0,600;0,700;1,400&family=MedievalSharp&display=swap" />
   <style>
     html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
     #map { position: absolute; inset: 0; }
@@ -17,6 +31,39 @@
     }
     #hud h1 { margin: 0 0 4px; font-size: 16px; }
     #hud .muted { color: #999; }
+    #hud label { display: block; margin-top: 6px; pointer-events: auto; }
+    #hud select { margin-left: 4px; font-size: 12px; }
+    .qre-ctrl { position: relative; }
+    .qre-ctrl > button { display: flex; align-items: center; justify-content: center; color: #333; }
+    .qre-panel {
+      position: absolute; top: 0; right: 36px; width: 220px; max-height: 80vh; overflow-y: auto;
+      background: #fff; border-radius: 6px; box-shadow: 0 2px 10px rgba(0,0,0,.25); padding: 6px 10px 8px; font-size: 13px;
+    }
+    .qre-panel[hidden] { display: none; }
+    .qre-panel-section { margin: 8px 0 2px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: #888; }
+    .qre-panel label { display: block; padding: 2px 0; cursor: pointer; white-space: nowrap; }
+    .qre-terrain { width: 250px; }
+    .qre-row { margin: 4px 0 6px; }
+    .qre-row-head { display: flex; align-items: center; gap: 6px; }
+    .qre-row-head > select { margin-left: auto; font-size: 12px; }
+    .qre-row input[type=range] { width: 100%; margin: 2px 0 0; }
+    .qre-num { margin-left: auto; width: 58px; font-size: 12px; text-align: right; }
+    /* beat .maplibregl-ctrl-group button (29px square) */
+    .qre-panel button.qre-mini {
+      display: inline-block; width: auto; height: auto; white-space: nowrap;
+      font-size: 11px; padding: 2px 7px; border: 1px solid #ccc; border-radius: 4px; background: #f6f6f6; cursor: pointer;
+    }
+    .qre-panel button.qre-mini:hover { background: #ececec; }
+    .qre-fit { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+    .qre-fit label { display: inline; padding: 0; }
+    .qre-status { color: #888; font-size: 11px; margin-left: auto; }
+    .qre-reset { margin-top: 10px; }
+    .qre-hue {
+      appearance: none; height: 8px; border-radius: 4px;
+      background: linear-gradient(to right, hsl(0,50%,45%), hsl(60,50%,45%), hsl(120,50%,45%), hsl(180,50%,45%), hsl(240,50%,45%), hsl(300,50%,45%), hsl(360,50%,45%));
+    }
+    .qre-hue::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 2px solid #555; }
+    .qre-hue::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: #fff; border: 2px solid #555; }
     .maplibregl-popup-content { font-size: 13px; line-height: 1.4; }
     .maplibregl-popup-content h3 { margin: 0 0 4px; font-size: 15px; }
     .maplibregl-popup-content ul { margin: 4px 0 0; padding-left: 18px; }
@@ -27,6 +74,7 @@
   <div id="hud">
     <h1>QR Empire</h1>
     <div id="hud-body" class="muted">loading…</div>
+    <label>Font <select id="font-select"></select></label>
   </div>
   <script type="module" src="/src/client/map.ts"></script>
 </body>

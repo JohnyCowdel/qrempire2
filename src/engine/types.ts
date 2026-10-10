@@ -1,6 +1,6 @@
 // State shapes. These are the ONLY things persisted. Each top-level aggregate
 // (player, base, region) is one document = one read / one write.
-import type { BuildingKind, ResourceKind, Slot, StatKind } from './content.ts';
+import type { BuildingKind, LocationType, ResourceKind, Slot, StatKind } from './content.ts';
 
 export type Id = string;
 export type Millis = number;
@@ -16,7 +16,19 @@ export interface LatLng {
 export interface LocationDef extends LatLng {
   id: Id;
   name: string;
+  type: LocationType;
   tier: 1 | 2 | 3;
+}
+
+/** A 3D asset (e.g. STL) placed on the world map. Static content, like LocationDef. */
+export interface ModelPlacement extends LatLng {
+  id: Id;
+  url: string; // served asset path, e.g. /assets/tower_roman.stl
+  rotation?: number; // degrees clockwise from north
+  scale?: number; // extra multiplier (game-scale exaggeration), default 1
+  unitsToMeters?: number; // asset units -> metres, default 0.001 (millimetres)
+  color?: string;
+  altitude?: number; // metres above ground
 }
 
 /** An item is just (def, seed). Its rolled stats are recomputed from the seed, never stored. */

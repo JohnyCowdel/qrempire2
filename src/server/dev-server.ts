@@ -16,6 +16,10 @@ const PORT = Number(process.env.PORT ?? 5173);
 const WORLD_SEED = Number(process.env.SEED ?? 42);
 const ROOT = path.resolve(import.meta.dirname, '../..');
 const BROWSER_DIRS = ['src/engine', 'src/client'].map((d) => path.join(ROOT, d) + path.sep);
+const ASSETS_DIR = path.join(ROOT, 'assets') + path.sep;
+const ASSET_TYPES: Record<string, string> = {
+  '.stl': 'model/stl', '.png': 'image/png', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.json': 'application/json',
+};
 
 const locations = makeLocations(WORLD_SEED, DEMO_CENTER, 60);
 const context = (): EngineContext => ({ worldSeed: WORLD_SEED, now: Date.now(), locations });
@@ -50,6 +54,12 @@ const server = createServer(async (req, res) => {
       return send(res, 200, code, 'text/javascript; charset=utf-8');
     }
 
+    if (p.startsWith('/assets/')) {
+      const file = path.resolve(ROOT, '.' + p);
+      if (!file.startsWith(ASSETS_DIR)) return send(res, 404, 'not found', 'text/plain');
+      return send(res, 200, await readFile(file), ASSET_TYPES[path.extname(file).toLowerCase()] ?? 'application/octet-stream');
+    }
+
     if (p === '/api/world') {
       return json(res, { worldSeed: WORLD_SEED, center: DEMO_CENTER, now: Date.now() });
     }
@@ -72,6 +82,7 @@ const server = createServer(async (req, res) => {
 
     send(res, 404, 'not found', 'text/plain');
   } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return send(res, 404, 'not found', 'text/plain');
     console.error(e);
     json(res, { error: 'internal error' }, 500);
   }

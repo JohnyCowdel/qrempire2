@@ -5,7 +5,27 @@ import type { Resources, Stats } from './types.ts';
 export const RESOURCE_KINDS = ['wood', 'stone', 'gold', 'crystal'] as const;
 export type ResourceKind = (typeof RESOURCE_KINDS)[number];
 
-export type BuildingKind = 'hall' | 'lumberyard' | 'quarry' | 'mine' | 'warehouse';
+export type LocationType = 'castle' | 'chapel' | 'tower' | 'ruins' | 'hut' | 'mine' | 'fountain' | 'monument';
+
+export interface LocationTypeDef {
+  name: string;
+  emoji: string; // default map symbol
+  icon?: string; // optional image (e.g. /assets/icons/castle.png) – replaces the emoji when set
+}
+
+/** What kinds of places exist. The map renders `icon` if present, else `emoji`. */
+export const LOCATION_TYPES: Record<LocationType, LocationTypeDef> = {
+  castle: { name: 'Castle', emoji: '🏰' },
+  chapel: { name: 'Chapel', emoji: '⛪' },
+  tower: { name: 'Watchtower', emoji: '🗼' },
+  ruins: { name: 'Ruins', emoji: '🏛️' },
+  hut: { name: 'Hut', emoji: '🛖' },
+  mine: { name: 'Mine', emoji: '🏭' },
+  fountain: { name: 'Fountain', emoji: '⛲' },
+  monument: { name: 'Monument', emoji: '🗿' },
+};
+
+export type BuildingKind ='hall' | 'lumberyard' | 'quarry' | 'mine' | 'warehouse';
 
 export interface BuildingDef {
   name: string;
