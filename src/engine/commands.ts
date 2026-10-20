@@ -5,14 +5,14 @@ import { BUILDINGS, ITEMS, LOOT_TABLES, TUNING, type BuildingKind } from './cont
 import { addRes, canAfford, settleBase } from './economy.ts';
 import { regionIdOf } from './geo.ts';
 import { hash32, rngFor, weighted } from './rng.ts';
-import { lootEpoch } from './scene.ts';
+import { lootEpoch, placementProblem } from './scene.ts';
 import type { BaseState, EngineContext, Id, ItemInstance, PlayerState, RegionState, Resources } from './types.ts';
 
 export type Command =
   | { type: 'scan'; locationId: Id } // QR already verified by the service (signature + GPS)
   | { type: 'claim'; locationId: Id }
   | { type: 'deposit'; baseId: Id }
-  | { type: 'upgrade'; baseId: Id; kind: BuildingKind; buildingId?: Id } // no buildingId = construct new
+  | { type: 'upgrade'; baseId: Id; kind: BuildingKind; buildingId?: Id; at?: { x: number; y: number; rot?: number } } // no buildingId = construct new at `at`
   | { type: 'equip'; itemUid: Id };
 
 export type GameEvent =
@@ -166,6 +166,13 @@ function upgrade(ctx: EngineContext, snap: Snapshot, cmd: Extract<Command, { typ
     if (def.unique && sameKind.length > 0) return fail('only one allowed');
     if (sameKind.length >= hallLevel) return fail('upgrade the town hall to build more');
     target = { id: `${cmd.kind}_${sameKind.length + 1}`, kind: cmd.kind, level: 0 };
+    if (cmd.at) { // placed by the player: the engine re-checks the spot
+      const loc = ctx.locations.get(base.locationId);
+      if (!loc) return fail('unknown location');
+      const problem = placementProblem(ctx.worldSeed, loc, base, cmd.at.x, cmd.at.y);
+      if (problem) return fail(problem);
+      target = { ...target, x: cmd.at.x, y: cmd.at.y, rot: cmd.at.rot ?? 0 };
+    }
   }
   const toLevel = target.level + 1;
   if (toLevel > def.maxLevel) return fail('max level reached');

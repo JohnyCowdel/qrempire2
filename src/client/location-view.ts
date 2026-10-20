@@ -56,8 +56,8 @@ export const VIEW = {
   mistColor: '#c9bfc6',
   edgeFogColor: '#8a7d88', // …and an impenetrable fog bank around the map edge
   edgeFogInside: 1.5, // tiles: fog starts this far inside the map edge…
-  edgeFogFade: 5, // …and is fully opaque this many tiles further out
-  edgeFogLayers: 9, // stacked translucent layers (more = denser, more 3D)
+  edgeFogFade: 1, // …and is fully opaque this many tiles further out
+  edgeFogLayers: 2, // stacked translucent layers above the ground (more = denser, more 3D)
 };
 
 /** Optional 3D assets. scale: asset units -> tiles (e.g. 0.001 for an STL in mm with 1 m tiles). */
@@ -84,7 +84,7 @@ const NPC_COLORS: Record<string, string> = {
 // =====================================================
 
 const T = Object.fromEntries(TILES.map((t, i) => [t, i])) as Record<(typeof TILES)[number], number>;
-const EDGE_MARGIN = 24; // tiles of ground / fog beyond the map edge (covers the view when looking outwards)
+const EDGE_MARGIN = 8; // tiles of ground / fog beyond the map edge (the fog is opaque a few tiles past the edge, so little is needed)
 
 // ---- asset loading (cached per URL) ----
 
@@ -324,7 +324,14 @@ export class LocationView {
     this.ring.rotation.x = -Math.PI / 2;
 
     this.rts = new RtsCamera(canvas, new THREE.Vector3(W / 2, 0, H / 2), { cx: W / 2, cz: H / 2, radius: SCENE_RADIUS - 2 });
-    this.rts.onClick = (x, y) => this.pick(x, y);
+    this.rts.onClick = (x, y) => (this.placing ? this.clickPlacement(x, y) : this.pick(x, y));
+    canvas.addEventListener('pointermove', (e) => this.movePlacement(e.clientX, e.clientY));
+    canvas.addEventListener('contextmenu', (e) => { if (this.placing) { e.preventDefault(); this.cancelPlacement(); this.placing = undefined; } });
+    window.addEventListener('keydown', (e) => {
+      if (!this.placing) return;
+      if (e.key === 'Escape') this.cancelPlacement();
+      else if (e.key === 'r' || e.key === 'R') { this.placing.rot += Math.PI / 4; this.placing.ghost.rotation.y = this.placing.rot; }
+    });
     this.renderer.setAnimationLoop(this.frame);
   }
 
@@ -342,13 +349,14 @@ export class LocationView {
   }
 
   setStructures(structures: SceneStructure[]): void {
-    const key = JSON.stringify(structures.map((s) => [s.id, s.kind, s.level, s.upgradingTo, s.x, s.y]));
+    const key = JSON.stringify(structures.map((s) => [s.id, s.kind, s.level, s.upgradingTo, s.x, s.y, s.rot]));
     if (key === this.structuresKey) return;
     this.structuresKey = key;
     this.structureGroup.clear();
     for (const s of structures) {
       const holder = new THREE.Group();
       holder.position.set(s.x + 0.5, this.heightAt(s.x + 0.5, s.y + 0.5), s.y + 0.5);
+      holder.rotation.y = s.rot ?? 0;
       holder.userData.kind = s.kind;
       const inner = new THREE.Group();
       inner.scale.setScalar(s.level ? 0.9 + 0.06 * s.level : 0.85);
@@ -375,6 +383,81 @@ export class LocationView {
 
   setHighlight(kind?: string): void {
     this.highlight = kind;
+  }
+
+  // ---- building placement (drag a new building onto the map) ----
+  private placing?: { kind: string; ghost: THREE.Group; rot: number; check: (x: number, z: number) => string | null; place: (x: number, z: number, rot: number) => void; onHint?: (problem: string | null) => void };
+  private readonly okMat = new THREE.MeshBasicMaterial({ color: '#7fd17f', transparent: true, opacity: 0.55, depthWrite: false });
+  private readonly badMat = new THREE.MeshBasicMaterial({ color: '#e06a5a', transparent: true, opacity: 0.55, depthWrite: false });
+
+  /**
+   * Start placing a building: a see-through ghost follows the cursor over the ground (green = ok,
+   * red = `check` returned a problem). Click places it (`place`), R / mouse wheel + Shift rotates,
+   * Esc or right-click cancels. `onHint` reports the current problem (for a status line).
+   */
+  startPlacement(kind: string, check: (x: number, z: number) => string | null, place: (x: number, z: number, rot: number) => void, onHint?: (problem: string | null) => void): void {
+    this.cancelPlacement();
+    const ghost = new THREE.Group();
+    const model = structurePrimitive(kind);
+    ghost.add(model);
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.8, 0.95, 32), this.okMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.05;
+    ghost.add(ring);
+    ghost.visible = false;
+    this.root.add(ghost);
+    this.placing = { kind, ghost, rot: 0, check, place, onHint };
+    this.canvas.style.cursor = 'crosshair';
+  }
+  cancelPlacement(): void {
+    if (!this.placing) return;
+    this.placing.ghost.removeFromParent();
+    this.placing = undefined;
+    this.canvas.style.cursor = '';
+  }
+  get isPlacing(): boolean { return !!this.placing; }
+
+  /** Ground point under the cursor: march along the view ray until it dips below the height field (cheap, no mesh raycast). */
+  private groundPoint(clientX: number, clientY: number): THREE.Vector3 | null {
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(this.rts.ndc(clientX, clientY), this.rts.camera);
+    const o = ray.ray.origin, d = ray.ray.direction, p = new THREE.Vector3();
+    if (d.y >= 0) return null;
+    const t0 = Math.max(0, (o.y - VIEW.heightScale * 0.7) / -d.y), t1 = (o.y + VIEW.heightScale * 0.5) / -d.y; // only where the ground can be
+    let prev = t0;
+    for (let t = t0; t < t1; t += 0.2) {
+      p.copy(o).addScaledVector(d, t);
+      if (p.y < this.heightAt(p.x, p.z)) { // crossed: refine between prev and t
+        let a = prev, b = t;
+        for (let k = 0; k < 8; k++) { const m = (a + b) / 2; p.copy(o).addScaledVector(d, m); if (p.y < this.heightAt(p.x, p.z)) b = m; else a = m; }
+        p.y = this.heightAt(p.x, p.z);
+        return p;
+      }
+      prev = t;
+    }
+    return null;
+  }
+  private movePlacement(clientX: number, clientY: number): void {
+    const P = this.placing;
+    if (!P) return;
+    const at = this.groundPoint(clientX, clientY);
+    P.ghost.visible = !!at;
+    if (!at) return;
+    P.ghost.position.copy(at);
+    P.ghost.rotation.y = P.rot;
+    const problem = P.check(at.x, at.z);
+    const mat = problem ? this.badMat : this.okMat;
+    P.ghost.traverse((o) => { if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).material = mat; });
+    P.onHint?.(problem);
+  }
+  private clickPlacement(clientX: number, clientY: number): void {
+    const P = this.placing;
+    if (!P) return;
+    const at = this.groundPoint(clientX, clientY);
+    if (!at || P.check(at.x, at.z)) return; // stays in placement mode until a valid spot
+    const { place, rot } = P;
+    this.cancelPlacement();
+    place(at.x, at.z, rot);
   }
 
   // ---- world building ----
@@ -523,8 +606,9 @@ export class LocationView {
    * thick wall of fog you can't see through.
    */
   private buildEdgeFog(): void {
+    const enlargeFactor = 1.5; // how much the fog extends beyond the map (the texture is larger than the map)
     const { width: W, height: H } = this.terrain;
-    const M = EDGE_MARGIN, PX = 4; // texture pixels per tile
+    const M = 20, PX = 4; // texture pixels per tile
     const cw = (W + 2 * M) * PX, ch = (H + 2 * M) * PX;
     const canvas = document.createElement('canvas');
     canvas.width = cw;
@@ -553,10 +637,11 @@ export class LocationView {
     const top = VIEW.heightScale * 0.45 + VIEW.rockBump + 1;
     for (let i = 0; i < VIEW.edgeFogLayers; i++) {
       const layer = new THREE.Mesh(new THREE.PlaneGeometry(W + 2 * M, H + 2 * M), new THREE.MeshBasicMaterial({
-        map: tex, transparent: true, opacity: 0.5, depthWrite: false, fog: false,
+        map: tex, transparent: true, opacity: 0.9, depthWrite: false, fog: false,
       }));
       layer.rotation.x = -Math.PI / 2;
-      layer.position.set(W / 2, THREE.MathUtils.lerp(-2, top, i / Math.max(1, VIEW.edgeFogLayers - 1)), H / 2);
+      // from just above the ground up to above the hills – no layer under the map
+      layer.position.set(W / 2, THREE.MathUtils.lerp(2, top, VIEW.edgeFogLayers > 1 ? i / (VIEW.edgeFogLayers - 1) : 1), H / 2);
       layer.renderOrder = 5;
       this.fogLayers.push(layer);
       this.root.add(layer);
@@ -599,6 +684,8 @@ export class LocationView {
       if (x < 0 || z < 0 || x >= W || z >= H || !insideArea(Math.floor(x), Math.floor(z), -2)) return 0;
       const s = share[tiles[Math.floor(z) * W + Math.floor(x)]] ?? 0;
       const road = this.roadNetwork().at(x, z);
+      const quarry = depositOf(this.worldSeed, this.loc); // quarries rank above meadows
+      if (quarry && Math.hypot(x - quarry.x, z - quarry.y) < quarry.radius * 1.1) return 0;
       return s && s * patchAmount(patchSeed, x, z, P.grassPatchScale, P.grassPatchThreshold) * (1 - Math.max(road.dusty, road.stone, road.path));
     };
     const shells = shellGrass(0, 0, W, H, (x, z) => this.heightAt(x, z), maskAt);
@@ -670,6 +757,10 @@ export class LocationView {
           tufts(D.reedsPerBogTile, reeds, false); // reeds everywhere in the bog
         } else if (t === T.field) {
           cropItemsForTile(fieldSeed, x, y, W / 2, H / 2, crops); // plots fan out from the centre
+          // trees rank above fields: where the ground is moist enough for woods they grow among the crops
+          if (terrainField(this.worldSeed, this.loc, x + 0.5, y + 0.5).moist > TERRAIN_LEVELS.forestMoisture) {
+            for (let i = 0; i < D.treesPerForestTile; i++) tree(0.75, 1.3, D.coniferShare);
+          }
         }
       }
     }
@@ -682,6 +773,22 @@ export class LocationView {
       list.push(...keep);
     };
     [broadleaf, conifer, rocks, grass, reeds].forEach(offRoad);
+
+    // Stacking priority (a higher layer clears the lower ones where they overlap):
+    //   roads > quarries > water > trees > fields > meadows
+    const quarry = depositOf(this.worldSeed, this.loc);
+    const inQuarry = (x: number, z: number) => !!quarry && Math.hypot(x - quarry.x, z - quarry.y) < quarry.radius * 1.1;
+    const onWater = (x: number, z: number) => this.heightAt(x, z) < 0.02;
+    const onRoad = (x: number, z: number) => { const rw = roadAt(x, z); return Math.max(rw.dusty, rw.stone, rw.path) >= 0.3; };
+    const keepOnly = <I extends { x: number; z: number }>(list: I[], ok: (i: I) => boolean) => { const k = list.filter(ok); list.length = 0; list.push(...k); };
+    keepOnly(broadleaf, (i) => !inQuarry(i.x, i.z) && !onWater(i.x, i.z)); // quarries, water > trees
+    keepOnly(conifer, (i) => !inQuarry(i.x, i.z) && !onWater(i.x, i.z));
+    const treeCells = new Set<number>(); // half-tile cells around every tree (fast lookup for the crops)
+    for (const t of [...broadleaf, ...conifer]) for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) treeCells.add((Math.floor(t.z * 2) + dz) * 1000 + Math.floor(t.x * 2) + dx);
+    keepOnly(grass, (i) => !inQuarry(i.x, i.z) && !onWater(i.x, i.z)); // > meadows
+    keepOnly(reeds, (i) => !inQuarry(i.x, i.z));
+    const treeNear = (x: number, z: number) => treeCells.has(Math.floor(z * 2) * 1000 + Math.floor(x * 2)); // trees > fields
+    for (const list of crops) keepOnly(list, (c) => !onRoad(c.x, c.z) && !inQuarry(c.x, c.z) && !onWater(c.x, c.z) && !treeNear(c.x, c.z));
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), v = new THREE.Vector3(), sc = new THREE.Vector3();
     const UP = new THREE.Vector3(0, 1, 0);
     /** One InstancedMesh for all items of one geometry. */

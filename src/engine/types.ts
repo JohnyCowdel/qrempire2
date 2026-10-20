@@ -61,6 +61,10 @@ export interface BuildingState {
   kind: BuildingKind;
   level: number;
   upgrade?: { toLevel: number; finishAt: Millis };
+  /** Where the player placed it (tile coords, fractional); unset = automatic spot near the centre. */
+  x?: number;
+  y?: number;
+  rot?: number; // radians around the vertical axis
 }
 
 /** Resources are stored as (stock, settledAt); the real amount at time t is computed lazily. */

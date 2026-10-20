@@ -397,6 +397,28 @@ export interface SceneStructure {
   level?: number;
   upgradingTo?: number;
   finishAt?: Millis;
+  rot?: number; // radians (player-placed buildings)
+}
+
+/** Minimum distance (tiles) between building centres – until real building footprints / blockers exist. */
+export const BUILDING_SPACING = 1.8;
+
+/**
+ * Why a building can't be placed at tile coords (x, y) of a location, or null if it can: inside the
+ * play area, on buildable ground (grass / sand), not too close to existing buildings. Pure – the
+ * client uses it for the placement preview, the engine re-checks it on the 'upgrade' command.
+ */
+export function placementProblem(worldSeed: number, loc: LocationDef, base: BaseState | undefined, x: number, y: number): string | null {
+  const terrain = generateTerrain(worldSeed, loc);
+  const tx = Math.floor(x), ty = Math.floor(y);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !insideArea(tx, ty, 1.5)) return 'outside the buildable area';
+  if (!buildable(terrain.tiles[ty * terrain.width + tx])) return 'can only build on open ground';
+  const seed = hash32(worldSeed, 'scene', loc.id), taken = new Set<number>();
+  for (const b of [...(base?.buildings ?? [])].sort((a, c) => a.id.localeCompare(c.id))) {
+    const [bx, by] = b.x !== undefined && b.y !== undefined ? [b.x, b.y] : placeNear(terrain, taken, [seed, 'b', b.id]).map((v) => v + 0.5);
+    if (Math.hypot(bx - x, by - y) < BUILDING_SPACING) return 'too close to another building';
+  }
+  return null;
 }
 
 export interface SceneNpc {
@@ -501,10 +523,13 @@ export function buildLocationScene(
   if (opts.base) {
     const base = settleBase(opts.base, ctx.now);
     for (const b of [...base.buildings].sort((a, c) => a.id.localeCompare(c.id))) {
-      const [x, y] = placeNear(terrain, taken, [seed, 'b', b.id]);
+      // player-placed: exact spot (structure x/y = centre - 0.5, like tile-placed ones); else automatic
+      const placed = b.x !== undefined && b.y !== undefined;
+      const [x, y] = placed ? [b.x! - 0.5, b.y! - 0.5] : placeNear(terrain, taken, [seed, 'b', b.id]);
+      if (placed) taken.add(Math.floor(b.y!) * terrain.width + Math.floor(b.x!));
       structures.push({
         id: b.id, kind: b.kind, label: BUILDINGS[b.kind].name, x, y, level: b.level,
-        upgradingTo: b.upgrade?.toLevel, finishAt: b.upgrade?.finishAt,
+        upgradingTo: b.upgrade?.toLevel, finishAt: b.upgrade?.finishAt, rot: b.rot,
       });
     }
   } else {

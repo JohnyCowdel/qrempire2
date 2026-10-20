@@ -2,7 +2,7 @@
 // Terrain, decorations and NPC movement are computed in the browser; the server only provides
 // game state (owner, buildings, stock) and executes commands.
 import {
-  baseIdFor, BUILDINGS, LOCATION_TYPES, RESOURCE_KINDS, setTemplates, settleBase, traitTitle, type TerrainTemplate,
+  baseIdFor, BUILDINGS, LOCATION_TYPES, placementProblem, RESOURCE_KINDS, setTemplates, settleBase, traitTitle, type TerrainTemplate,
   type BaseState, type BuildingKind, type Command, type LocationTrait, type Resources, type SceneStructure,
 } from '../engine/index.ts';
 import { LocationView, STRUCTURE_EMOJI } from './location-view.ts';
@@ -121,9 +121,14 @@ interface Action {
   reason?: string;
 }
 
-function actionsFor(kind: BuildingKind, stock: Resources): Action[] {
+/** The "build a new one" action of a kind (for the build bar), or undefined if none can ever be added. */
+function newBuildAction(kind: BuildingKind, stock: Resources): Action | undefined {
+  return actionsFor(kind, stock, true).find((a) => !(a.command && 'buildingId' in a.command && a.command.buildingId));
+}
+
+function actionsFor(kind: BuildingKind, stock: Resources, includeNew = false): Action[] {
   const def = BUILDINGS[kind];
-  if (!base) return [{ label: 'Build', cost: def.cost(1), ms: def.buildMs(1), reason: scene.ownerId ? 'not your base' : 'claim this location first' }];
+  if (!base) return includeNew ? [{ label: 'Build', cost: def.cost(1), ms: def.buildMs(1), reason: scene.ownerId ? 'not your base' : 'claim this location first' }] : [];
   const mine = base.ownerId === playerId;
   const hall = base.buildings.find((b) => b.kind === 'hall')?.level ?? 0;
   const busy = base.buildings.some((b) => b.upgrade);
@@ -139,7 +144,7 @@ function actionsFor(kind: BuildingKind, stock: Resources): Action[] {
     const extra = next > def.maxLevel ? 'max level' : kind !== 'hall' && next > hall ? `needs Town Hall ${next}` : undefined;
     actions.push({ label: `Upgrade lvl ${b.level} → ${next}`, cost, ms: next <= def.maxLevel ? def.buildMs(next) : 0, command: { type: 'upgrade', baseId, kind, buildingId: b.id }, reason: blocked(cost, extra) });
   }
-  if (!def.unique || existing.length === 0) {
+  if (includeNew && (!def.unique || existing.length === 0)) {
     const extra = kind !== 'hall' && existing.length >= hall ? `Town Hall ${hall} allows ${hall}` : undefined;
     actions.push({ label: existing.length ? 'Build another' : 'Build', cost: def.cost(1), ms: def.buildMs(1), command: { type: 'upgrade', baseId, kind }, reason: blocked(def.cost(1), extra) });
   }
@@ -174,7 +179,8 @@ function render(): void {
       </div>
       <div class="row muted">Carrying: ${fmtRes(wallet)} ${base.ownerId === playerId && Object.keys(wallet).length ? '<button id="deposit" class="btn">Deposit</button>' : ''}</div>` : ''}
     <h2>Buildings</h2>
-    <div class="cards">${(Object.keys(BUILDINGS) as BuildingKind[]).map((kind) => card(kind, stock)).join('')}</div>
+    <div class="muted small">New buildings: pick one in the build bar over the map and place it.</div>
+    <div class="cards">${(Object.keys(BUILDINGS) as BuildingKind[]).filter((k) => base?.buildings.some((b) => b.kind === k)).map((kind) => card(kind, stock)).join('')}</div>
     <div class="msg">${esc(message)}</div>`;
 
   side.querySelector('#loc-prev')?.addEventListener('click', () => goStep(-1));
@@ -202,7 +208,54 @@ function render(): void {
   side.querySelectorAll<HTMLButtonElement>('button[data-cmd]').forEach((btn) => btn.addEventListener('click', () => {
     send(JSON.parse(btn.dataset.cmd!), `${btn.dataset.name} started`);
   }));
+  renderBuildBar(stock);
 }
+
+// ---- build bar: icons over the map; hover = info, click = drag a ghost onto the map, click to place ----
+const buildBar = document.getElementById('buildbar')!;
+const tip = document.getElementById('buildtip')!;
+const hintEl = document.getElementById('buildhint')!;
+function renderBuildBar(stock: Resources): void {
+  buildBar.innerHTML = (Object.keys(BUILDINGS) as BuildingKind[]).map((kind) => {
+    const a = newBuildAction(kind, stock);
+    return `<button class="bb${a?.reason || !a ? ' off' : ''}" data-kind="${kind}">${STRUCTURE_EMOJI[kind] ?? '❔'}</button>`;
+  }).join('');
+  buildBar.querySelectorAll<HTMLButtonElement>('.bb').forEach((btn) => {
+    const kind = btn.dataset.kind as BuildingKind;
+    btn.onmouseenter = () => showTip(btn, kind, stock);
+    btn.onmouseleave = () => tip.classList.remove('show');
+    btn.onclick = () => startBuild(kind, stock);
+  });
+}
+function showTip(btn: HTMLElement, kind: BuildingKind, stock: Resources): void {
+  const def = BUILDINGS[kind], a = newBuildAction(kind, stock);
+  const count = base?.buildings.filter((b) => b.kind === kind).length ?? 0;
+  const purpose = [def.production ? `produces ${fmtRes(def.production(1))}/h per level` : '', def.storage ? 'adds storage' : '', def.unique ? 'only one per base' : ''].filter(Boolean).join(' · ');
+  tip.innerHTML = `<b>${esc(def.name)}</b>${count ? ` <span class="muted">(${count} built)</span>` : ''}
+    <div class="muted small">${esc(purpose || '–')}</div>
+    ${a ? `<div class="small">${fmtRes(a.cost)} · ⏱ ${fmtTime(a.ms)}</div>${a.reason ? `<div class="reason small">${esc(a.reason)}</div>` : '<div class="ok small">click, then place it on the map</div>'}` : '<div class="reason small">only one allowed</div>'}`;
+  const r = btn.getBoundingClientRect();
+  tip.style.left = `${r.left}px`;
+  tip.style.top = `${r.top - 8}px`;
+  tip.classList.add('show');
+}
+function startBuild(kind: BuildingKind, stock: Resources): void {
+  const a = newBuildAction(kind, stock);
+  if (!a || a.reason) { message = `⚠️ ${a?.reason ?? 'only one allowed'}`; render(); return; }
+  tip.classList.remove('show');
+  const name = BUILDINGS[kind].name;
+  hintEl.textContent = `Placing ${name} – click to build · R: rotate · Esc / right-click: cancel`;
+  hintEl.classList.add('show');
+  view.startPlacement(kind,
+    (x, z) => placementProblem(world.worldSeed, scene.location as any, base ?? undefined, x, z),
+    async (x, z, rot) => {
+      hintEl.classList.remove('show');
+      await send({ type: 'upgrade', baseId, kind, at: { x, y: z, rot } }, `${name} construction started`);
+    },
+    (problem) => { hintEl.textContent = problem ? `⚠️ ${problem}` : `Placing ${name} – click to build · R: rotate · Esc / right-click: cancel`; });
+}
+window.addEventListener('keydown', (e) => { if (e.key === 'Escape') hintEl.classList.remove('show'); });
+document.getElementById('viewport')!.addEventListener('contextmenu', () => hintEl.classList.remove('show'));
 
 /** Graphics dropdown: auto (device-based) or a fixed preset. Changing it reloads the page. */
 function qualityOptions(): string {

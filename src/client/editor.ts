@@ -75,7 +75,7 @@ const TABS: Record<string, Knob[]> = {
   ],
   Stones: [
     ['placement.rockVariants', 0, 8, 1], ['placement.mossyRockVariants', 0, 8, 1], ['placement.mossyShare', 0, 1, 0.01],
-    ['rockChamfer', 0, 0.5, 0.01], ['rockRoughness', 0, 1, 0.01], ['rockColor'],
+    ['rockChamfer', 0, 1.5, 0.01], ['rockRoughness', 0, 1, 0.01], ['rockColor'],
     ['placement.rockChance', 0, 1, 0.01], ['placement.pebbleChance', 0, 0.5, 0.01],
     ['#Surface (stones, cliffs, quarries; texture colours: Ground tab → rock)'], ['rockTexture.tint', 0, 1, 0.01], ['rockTexture.scale', 0.5, 15, 0.1],
     ['rockTexture.bump', 0, 4, 0.05], ['rockTexture.cracks', 0, 1, 0.01],

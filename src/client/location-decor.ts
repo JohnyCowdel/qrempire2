@@ -1617,7 +1617,7 @@ function chamferedHull(pts: THREE.Vector3[], chamfer: number): THREE.BufferGeome
     mid.copy(a).add(b).add(c).divideScalar(3);
     for (const v of [a, b, c]) {
       const d = v.distanceTo(mid);
-      out.push(v.clone().lerp(mid, Math.min(0.5, chamfer / Math.max(d, 1e-6))));
+      out.push(v.clone().lerp(mid, Math.min(2, chamfer / Math.max(d, 1e-6))));
     }
   }
   hull.dispose();

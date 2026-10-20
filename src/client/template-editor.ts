@@ -33,7 +33,7 @@ const RANGES: Record<string, [number, number, number]> = {
   edge: [0.005, 0.3, 0.005], scale: [1, 20, 0.1], threshold: [0.2, 0.9, 0.005], moist: [-0.6, 0.6, 0.01], rock: [-0.3, 0.3, 0.005],
   ridge: [0, 0.5, 0.005], fields: [0, 2, 0.01], minSlope: [0.2, 3, 0.05], fullSlope: [0.3, 4, 0.05], p1: [0.05, 3, 0.01],
   gridSize: [0.3, 4, 0.05], protrude: [-0.5, 0.5, 0.01], bulge: [0, 1, 0.01], topBulge: [0, 1, 0.01], bottomBulge: [0, 1, 0.01], topBulgeAt: [0, 0.5, 0.01], bottomBulgeAt: [0.5, 1, 0.01], gridJitter: [0, 1.5, 0.01], reachJitter: [0, 0.6, 0.01],
-  chamfer: [0, 0.5, 0.01], sink: [-1, 1, 0.01], rubblePerRock: [0, 12, 1], rubbleSize: [0.02, 0.6, 0.01], 'cliff.depth': [0, 2, 0.01], 'climate.height': [-0.2, 0.2, 0.005], 'quarry.radius': [0.03, 0.2, 0.002], distance: [0, 0.45, 0.005],
+  chamfer: [0, 1.5, 0.01], sink: [-1, 1, 0.01], rubblePerRock: [0, 12, 1], rubbleSize: [0.02, 0.6, 0.01], 'cliff.depth': [0, 2, 0.01], 'climate.height': [-0.2, 0.2, 0.005], 'quarry.radius': [0.03, 0.2, 0.002], distance: [0, 0.45, 0.005],
   'valley.width': [0, 0.4, 0.005],
 };
 const KIND_LABEL: Record<TemplateKind, string> = {

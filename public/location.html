@@ -21,6 +21,15 @@
     #viewport:active { cursor: grabbing; }
     #fps { position: absolute; left: 12px; top: 10px; color: #fff; font-size: 12px; text-shadow: 0 1px 2px #000; pointer-events: none; opacity: .85; }
     select { background: #1c2027; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; }
+    /* build bar: building icons over the map; hover card; placement hint */
+    #buildbar { position: absolute; left: 12px; bottom: 34px; display: flex; gap: 6px; padding: 6px; background: rgba(28, 32, 39, .82); border: 1px solid var(--line); border-radius: 10px; }
+    .bb { width: 46px; height: 46px; font-size: 24px; border-radius: 8px; border: 1px solid #4a5465; background: #3b4352; cursor: pointer; padding: 0; }
+    .bb:hover { background: #4a5465; border-color: var(--gold); }
+    .bb.off { opacity: .45; }
+    #buildtip { position: fixed; transform: translateY(-100%); max-width: 240px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; pointer-events: none; display: none; z-index: 5; box-shadow: 0 4px 14px rgba(0,0,0,.4); }
+    #buildtip.show { display: block; }
+    #buildhint { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); padding: 5px 12px; background: rgba(28, 32, 39, .85); border: 1px solid var(--line); border-radius: 14px; font-size: 13px; display: none; pointer-events: none; }
+    #buildhint.show { display: block; }
     #help { position: absolute; left: 12px; bottom: 10px; color: #fff; font-size: 12px; text-shadow: 0 1px 2px #000; pointer-events: none; opacity: .85; }
     #side { width: 340px; flex-shrink: 0; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--line); padding: 14px 16px 24px; box-sizing: border-box; font-size: 14px; }
     @media (max-width: 760px) {
@@ -28,6 +37,8 @@
       #viewport { height: 55vh; flex: none; width: 100%; }
       #side { width: 100%; border-left: 0; border-top: 1px solid var(--line); }
       #help { display: none; } /* keyboard/mouse hints: irrelevant on phones, and would overlap the sidebar */
+      #buildbar { bottom: auto; top: calc(55vh - 70px); }
+      #buildhint { left: 50%; top: 8px; }
     }
     h1 { font-size: 20px; margin: 8px 0 2px; }
     h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 18px 0 6px; }
@@ -63,6 +74,9 @@
   <div id="app">
     <canvas id="viewport"></canvas>
     <div id="fps"></div>
+    <div id="buildbar"></div>
+    <div id="buildtip"></div>
+    <div id="buildhint"></div>
     <div id="help">WASD / arrows / screen edge: scroll · drag: pan · wheel: zoom · Q/E: rotate · click a building to select</div>
     <aside id="side">loading…</aside>
   </div>
