@@ -4,11 +4,11 @@
 // angle, and the ripples catch the sun as glints. No textures needed.
 import * as THREE from 'three';
 import { Reflector } from 'three/addons/objects/Reflector.js';
-import { DECOR } from './location-decor.ts';
+import type { WaterLooks } from '../engine/index.ts';
 
 // ======================= KNOBS =======================
-// Colour, transparency, reflection and ripples are per water environment (lake / pond / river):
-// DECOR.water in location-decor.ts (asset editor → Water). These are shared:
+// Colour, transparency, reflection and ripples come from the location's lake / pond / river
+// templates (asset editor → Water). These are shared:
 export const WATER_SURFACE = {
   reflection: true, // false = cheap non-reflective water (no second scene render)
   resolution: 0.5, // reflection texture size relative to the screen
@@ -93,9 +93,9 @@ const fragmentShader = /* glsl */ `
 /**
  * Build the water plane (y = 0, centred at cx/cz). `env` = environment mask (waterMaskTexture) and
  * the world rectangle it covers; without it the whole surface looks like a lake. Call `update(time)`
- * every frame (also picks up changed DECOR.water settings).
+ * every frame. `looks`: the water looks of the location's lake / pond / river templates (read every frame).
  */
-export function createWater(size: number, cx: number, cz: number, sunDirection: THREE.Vector3, env?: { mask: THREE.Texture; x0: number; z0: number; size: number }):
+export function createWater(size: number, cx: number, cz: number, sunDirection: THREE.Vector3, looks: () => WaterLooks, env?: { mask: THREE.Texture; x0: number; z0: number; size: number }):
   { mesh: THREE.Mesh; update: (time: number) => void } {
   const S = WATER_SURFACE;
   const v3 = () => ({ value: new THREE.Vector3() });
@@ -112,7 +112,7 @@ export function createWater(size: number, cx: number, cz: number, sunDirection: 
     ...THREE.UniformsLib.fog,
   };
   const syncEnv = () => {
-    const { lake: L, pond: P, river: R } = DECOR.water;
+    const { lake: L, pond: P, river: R } = looks();
     uniforms.uColL.value.set(L.color); uniforms.uColP.value.set(P.color); uniforms.uColR.value.set(R.color);
     uniforms.uOpac3.value.set(L.opacity, P.opacity, R.opacity);
     uniforms.uRefl3.value.set(L.reflectivity, P.reflectivity, R.reflectivity);

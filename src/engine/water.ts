@@ -1,8 +1,5 @@
-// Water shapes for the procedural location terrain: lake / pond outlines and river centre lines
-// as editable templates (the asset editor's Water tab), plus depth and bank slope per water type.
-// Each location picks one template per water body (by its seed) and scales / rotates it.
-// The server uses these defaults; the client can override them (setWater) before generating
-// terrain – shapes only change how the ground looks, not the game rules.
+// Shape helpers for the terrain templates (templates.ts): closed outlines as radius-by-angle tables,
+// river centre lines as polylines, bank widths from bank slopes. WATER: shared water settings.
 
 /** Closed outline around (0, 0), roughly unit radius; must be star-shaped (every direction hits it once). */
 export interface WaterShape { points: [number, number][] }
@@ -11,39 +8,9 @@ export interface RiverShape { points: [number, number, number][] }
 
 export const WATER = {
   heightScale: 8, // world units per height unit (the 3D view's VIEW.heightScale) – turns bank slopes into widths
-  lake: {
-    depth: 0.08, // how far the bed lies below the water line (height units)
-    bankSlope: [0.3, 0.7] as [number, number], // min / max steepness of the banks (height per tile); each lake picks one (cliffs start at ~0.8)
-    templates: [
-      { points: [[1, 0], [0.7, 0.6], [0, 0.85], [-0.6, 0.7], [-1.05, 0.05], [-0.7, -0.65], [0.05, -0.9], [0.75, -0.55]] },
-      { points: [[1, 0.1], [0.6, 0.55], [0.05, 0.4], [-0.5, 0.7], [-1, 0.1], [-0.8, -0.5], [-0.1, -0.8], [0.7, -0.6]] },
-      { points: [[1.2, 0], [0.8, 0.45], [0, 0.55], [-0.8, 0.5], [-1.2, 0], [-0.8, -0.45], [0, -0.6], [0.8, -0.4]] },
-    ] as WaterShape[],
-  },
-  pond: {
-    depth: 0.05,
-    bankSlope: [0.35, 0.8] as [number, number],
-    count: [1, 3] as [number, number], // ponds per bog location
-    size: [0.035, 0.065] as [number, number], // radius (1 = map width)
-    templates: [
-      { points: [[1, 0], [0.6, 0.75], [-0.3, 0.9], [-0.95, 0.3], [-0.85, -0.5], [-0.1, -0.95], [0.7, -0.65]] },
-      { points: [[1, 0.2], [0.35, 0.55], [-0.2, 1], [-0.8, 0.45], [-0.6, -0.2], [-0.9, -0.8], [0.1, -0.7], [0.75, -0.6]] },
-    ] as WaterShape[],
-  },
-  river: {
-    depth: 0.06,
-    bankSlope: [0.3, 0.7] as [number, number],
-    width: [0.02, 0.032] as [number, number], // channel width (1 = map width)
-    templates: [
-      { points: [[-1, 0, 1], [-0.5, 0.3, 1], [0, 0, 1.1], [0.5, -0.3, 1], [1, 0, 1]] },
-      { points: [[-1, 0.2, 1], [-0.6, -0.4, 0.9], [-0.2, 0.4, 1.2], [0.2, -0.3, 1], [0.6, 0.35, 0.9], [1, -0.1, 1]] },
-      { points: [[-1, 0, 0.7], [-0.3, 0.15, 1], [0.3, -0.1, 1.4], [1, 0, 1.6]] },
-    ] as RiverShape[],
-  },
-  /** Editor preview only: force one water body of this kind / template into the centre. */
-  preview: null as null | { kind: 'lake' | 'pond' | 'river'; index: number },
 };
 export type WaterKind = 'lake' | 'pond' | 'river';
+
 
 const listeners: (() => void)[] = [];
 /** Called when the water config changes (terrain caches subscribe). */
@@ -67,22 +34,58 @@ const cr = (p0: number, p1: number, p2: number, p3: number, t: number) =>
   0.5 * (2 * p1 + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t + (-p0 + 3 * p1 - 3 * p2 + p3) * t * t * t);
 
 const RADIAL_SAMPLES = 128;
-/** A closed outline as a smooth radius-by-angle table (mean radius 1). */
-export function radialTable(shape: WaterShape): Float32Array {
-  const pts = shape.points.map(([x, y]) => ({ a: Math.atan2(y, x), r: Math.hypot(x, y) })).sort((p, q) => p.a - q.a);
-  const n = pts.length, out = new Float32Array(RADIAL_SAMPLES);
-  if (n < 3) return out.fill(1);
-  for (let k = 0; k < RADIAL_SAMPLES; k++) {
-    const a = -Math.PI + (k / RADIAL_SAMPLES) * Math.PI * 2;
-    let i = pts.findIndex((p) => p.a > a) - 1; // segment pts[i] -> pts[i+1] (wrapping)
-    if (i < 0) i = n - 1;
-    const p1 = pts[i], p2 = pts[(i + 1) % n], p0 = pts[(i - 1 + n) % n], p3 = pts[(i + 2) % n];
-    let span = p2.a - p1.a; if (span <= 0) span += Math.PI * 2;
-    let da = a - p1.a; if (da < 0) da += Math.PI * 2;
-    out[k] = Math.max(0.05, cr(p0.r, p1.r, p2.r, p3.r, Math.min(1, da / span)));
+
+/**
+ * Closed Catmull-Rom spline through the points IN THEIR ORDER (point i -> i+1 -> … -> 0), as a dense
+ * polygon of [x, y, value] (value = point index `idx`, default `fallback`). This is the curve the
+ * editor draws; the terrain follows it via the radius-by-angle tables below.
+ */
+export function splineLoop(points: number[][], idx = 2, fallback = 1, steps = 12): [number, number, number][] {
+  const n = points.length, out: [number, number, number][] = [];
+  if (n < 3) return out;
+  const v = (p: number[]) => p[idx] ?? fallback;
+  for (let i = 0; i < n; i++) {
+    const p0 = points[(i - 1 + n) % n], p1 = points[i], p2 = points[(i + 1) % n], p3 = points[(i + 2) % n];
+    for (let k = 0; k < steps; k++) {
+      const t = k / steps;
+      out.push([cr(p0[0], p1[0], p2[0], p3[0], t), cr(p0[1], p1[1], p2[1], p3[1], t), cr(v(p0), v(p1), v(p2), v(p3), t)]);
+    }
   }
-  const mean = out.reduce((s, v) => s + v, 0) / RADIAL_SAMPLES;
-  return out.map((v) => v / mean);
+  return out;
+}
+
+/** Ray from the origin at angle a against a closed polygon: farthest hit (radius + value there), or null. */
+function rayHit(loop: [number, number, number][], a: number): { r: number; v: number } | null {
+  const dx = Math.cos(a), dy = Math.sin(a);
+  let best: { r: number; v: number } | null = null;
+  for (let i = 0; i < loop.length; i++) {
+    const [ax, ay, av] = loop[i], [bx, by, bv] = loop[(i + 1) % loop.length];
+    const ex = bx - ax, ey = by - ay, den = dx * ey - dy * ex;
+    if (Math.abs(den) < 1e-12) continue;
+    const t = (ax * ey - ay * ex) / den, u = (ax * dy - ay * dx) / den; // ray param, segment param
+    if (t > 0 && u >= 0 && u <= 1 && (!best || t > best.r)) best = { r: t, v: av + (bv - av) * u };
+  }
+  return best;
+}
+
+/** Unnormalised radius-by-angle table of a closed outline (its spline, see splineLoop). */
+function rawRadial(points: number[][]): Float32Array {
+  const loop = splineLoop(points), out = new Float32Array(RADIAL_SAMPLES);
+  if (!loop.length) return out.fill(1);
+  for (let k = 0; k < RADIAL_SAMPLES; k++) out[k] = Math.max(0.05, rayHit(loop, -Math.PI + (k / RADIAL_SAMPLES) * Math.PI * 2)?.r ?? 0.05);
+  return out;
+}
+/** Mean radius of an outline's spline (the unit radialTable normalises by). */
+export function outlineMean(points: number[][]): number {
+  const t = rawRadial(points);
+  return t.reduce((s, v) => s + v, 0) / RADIAL_SAMPLES;
+}
+/**
+ * A closed outline as a radius-by-angle table, following its spline in point order. Absolute: the
+ * points' own coordinates (no normalising), so moving one point never changes the rest of the shape.
+ */
+export function radialTable(shape: WaterShape): Float32Array {
+  return rawRadial(shape.points);
 }
 /** Radius of a radial table at angle a (radians). */
 export function radialAt(table: Float32Array, a: number): number {
@@ -92,9 +95,17 @@ export function radialAt(table: Float32Array, a: number): number {
   return v0 + (v1 - v0) * t;
 }
 
+/** Any per-point value (index `idx` of each point, default `fallback`) by angle, interpolated along the spline. */
+export function radialValueTable(points: number[][], idx: number, fallback: number): Float32Array {
+  const loop = splineLoop(points, idx, fallback), out = new Float32Array(RADIAL_SAMPLES);
+  if (!loop.length) return out.fill(fallback);
+  for (let k = 0; k < RADIAL_SAMPLES; k++) out[k] = rayHit(loop, -Math.PI + (k / RADIAL_SAMPLES) * Math.PI * 2)?.v ?? fallback;
+  return out;
+}
+
 /** A river centre line as a dense polyline: [x, y, widthMultiplier] in template units. */
 export function riverPolyline(shape: RiverShape): [number, number, number][] {
-  const p = [...shape.points].sort((a, b) => a[0] - b[0]);
+  const p = shape.points; // in their order (no sorting: points never swap)
   if (p.length < 2) return [[-1, 0, 1], [1, 0, 1]];
   const out: [number, number, number][] = [];
   for (let i = 0; i < p.length - 1; i++) {
@@ -105,10 +116,13 @@ export function riverPolyline(shape: RiverShape): [number, number, number][] {
     }
   }
   out.push([...p[p.length - 1]]);
-  // extend both ends well beyond the map edge
-  const a = out[0], b = out[out.length - 1];
-  out.unshift([a[0] - 1, a[1], a[2]]);
-  out.push([b[0] + 1, b[1], b[2]]);
+  // extend both ends well beyond the map edge, along the end segments
+  const ext = (end: number[], prev: number[]) => {
+    const dx = end[0] - prev[0], dy = end[1] - prev[1], l = Math.hypot(dx, dy) || 1;
+    return [end[0] + (dx / l) * 1.5, end[1] + (dy / l) * 1.5, end[2]] as [number, number, number];
+  };
+  out.unshift(ext(p[0], p[1]));
+  out.push(ext(p[p.length - 1], p[p.length - 2]));
   return out;
 }
 

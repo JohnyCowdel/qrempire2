@@ -1,11 +1,12 @@
 // Location page scene: procedural terrain + structures + NPCs.
 // Terrain is a pure function of (worldSeed, locationId), so the client can generate it
 // itself; the server only ever sends the small dynamic bits (owner, buildings, chest).
-import { BUILDINGS, TUNING, type LocationTrait } from './content.ts';
+import { BUILDINGS, TUNING } from './content.ts';
 import { settleBase } from './economy.ts';
 import { fbm } from './noise.ts';
 import { hash32, rngFor } from './rng.ts';
-import { bankWidth, onWaterChange, polylineDistance, radialAt, radialTable, riverPolyline, WATER } from './water.ts';
+import { bankWidth, onWaterChange, polylineDistance, radialAt, radialTable, radialValueTable, riverPolyline } from './water.ts';
+import { getTemplate, onTemplatesChange, param, type TemplateKind, type TerrainTemplate } from './templates.ts';
 import type { BaseState, EngineContext, Id, LocationDef, Millis, PlayerState } from './types.ts';
 
 export const TILES = ['water', 'sand', 'grass', 'forest', 'rock', 'snow', 'field', 'bog'] as const; // snow unused
@@ -38,71 +39,120 @@ export const TERRAIN_LEVELS = { water: 0.32, sand: 0.35, forestMoisture: 0.58, r
  */
 interface Layout {
   seed: number;
-  has: (t: LocationTrait) => boolean;
-  plateauR: number; // radius of the flat top (1 = half the map width)
-  plateauSlope: number; // small = steep plateau, large = rounded hill
-  plateauHeight: number; // 0 without 'central-high-spot'
-  valleyAngle: number; // axis of the valley floor
-  river: { kind: 'direct' | 'curvy' | 'peninsula'; angle: number; amp: number; freq: number; phase: number; width: number; loopR: number; line: [number, number, number][]; bank: number } | null;
-  lake: { kind: 'island' | 'peninsula' | 'nearby'; ringR: number; ringW: number; neck: number; cx: number; cy: number; radius: number; shape: Float32Array; rot: number; bank: number } | null;
-  ponds: { cx: number; cy: number; radius: number; shape: Float32Array; rot: number; bank: number }[];
+  preview: boolean;
+  plateau: { R: number; slope: number; height: number; calm: number; rimRock: number; shape: Float32Array; heights: Float32Array; rot: number } | null;
+  foot: number; // where the centre's influence ends (r units)
+  climate: { moist: number; height: number; rock: number };
+  valley: { angle: number; ridge: number; width: number } | null;
+  perimeter: { moist: number; fields: number } | null;
+  fields: { threshold: number } | null;
+  bog: number | null; // bog noise threshold (pond template)
+  rocky: { amount: number; scale: number; threshold: number } | null;
+  forests: { cx: number; cy: number; R: number; shape: Float32Array; rot: number; edge: number; amount: number }[];
+  river: { kind: 'line' | 'peninsula'; angle: number; width: number; loopR: number; line: [number, number, number][]; bank: number; depth: number } | null;
+  lake: { kind: 'island' | 'peninsula' | 'nearby'; ringR: number; ringW: number; neck: number; cx: number; cy: number; radius: number; shape: Float32Array; rot: number; bank: number; depth: number } | null;
+  ponds: { cx: number; cy: number; radius: number; shape: Float32Array; rot: number; bank: number; depth: number }[];
   deposit: { kind: DepositKind; cx: number; cy: number; radius: number } | null; // square units, origin at the centre
 }
 
 export type DepositKind = 'iron' | 'copper' | 'stone' | 'mud' | 'salt';
 const layoutCache = new Map<string, Layout>();
-onWaterChange(() => { layoutCache.clear(); terrainCache.clear(); });
-const pickTemplate = <T>(list: T[], r: () => number): T | undefined => (list.length ? list[Math.floor(r() * list.length) % list.length] : undefined);
+const clearCaches = () => { layoutCache.clear(); terrainCache.clear(); };
+onWaterChange(clearCaches);
+onTemplatesChange(clearCaches);
+const pair = (v: unknown, fallback: [number, number]): [number, number] => (Array.isArray(v) && v.length === 2 ? [Number(v[0]), Number(v[1])] : fallback);
+
+/** The location's templates, resolved by kind (first one of each kind wins). */
+function templatesOf(loc: LocationDef): Partial<Record<TemplateKind, TerrainTemplate>> {
+  const out: Partial<Record<TemplateKind, TerrainTemplate>> = {};
+  for (const name of loc.traits ?? []) {
+    const t = getTemplate(name) ?? loc.extraTemplates?.find((x) => x.name === name);
+    if (t && !out[t.kind]) out[t.kind] = t;
+  }
+  return out;
+}
 
 function layoutFor(worldSeed: number, loc: LocationDef): Layout {
-  const key = `${worldSeed}:${loc.id}:${loc.traits?.join(',')}:${JSON.stringify(WATER.preview)}`;
+  const key = `${worldSeed}:${loc.id}:${loc.traits?.join(',')}:${loc.preview ? 'p' : ''}`;
   let l = layoutCache.get(key);
   if (!l) {
     const seed = hash32(worldSeed, 'terrain', loc.id);
     const r = rngFor(seed, 'layout');
-    const traits = new Set(loc.traits ?? []);
-    const has = (t: LocationTrait) => traits.has(t);
-    const plateauR = 0.1 + r.next() * 0.14, plateauSlope = 0.1 + r.next() * 0.22;
-    const riverKind = has('river-direct') ? 'direct' : has('river-curvy') ? 'curvy' : has('river-peninsula') ? 'peninsula' : null;
-    const lakeKind = has('lake-island') ? 'island' : has('lake-peninsula') ? 'peninsula' : has('lake-nearby') ? 'nearby' : null;
+    const pv = !!loc.preview; // editor preview: everything centred, unrotated
+    const T = templatesOf(loc);
+    const num = (t: TerrainTemplate, k: string) => Number(param(t, k));
+    const wr = rngFor(seed, 'water-shapes'), wn = () => wr.next(); // own stream for water shapes / banks
+    const between = (t: TerrainTemplate, k: string) => { const [a, b] = pair(param(t, k), [0, 0]); return a + wn() * (b - a); };
+    // centre
+    const hs = T.highspot;
+    const plateau: Layout['plateau'] = hs ? {
+      R: num(hs, 'radius') * (pv ? 1 : 0.85 + r.next() * 0.3), slope: num(hs, 'slope') * (pv ? 1 : 0.8 + r.next() * 0.4),
+      height: num(hs, 'height') + loc.tier * num(hs, 'tierHeight'), calm: num(hs, 'calm'), rimRock: num(hs, 'rimRock'),
+      shape: radialTable({ points: (hs.points ?? []) as [number, number][] }),
+      heights: radialValueTable(hs.points ?? [], 2, 1), rot: pv ? 0 : r.next() * Math.PI * 2,
+    } : null;
+    const foot = plateau ? plateau.R + plateau.slope : 0.3;
+    // modifiers
+    const climate = { moist: 0, height: 0, rock: 0 };
+    if (T.climate) { climate.moist = num(T.climate, 'moist'); climate.height = num(T.climate, 'height'); climate.rock = num(T.climate, 'rock'); }
+    // forests: outlines in map coordinates, rotated around the centre by the seed
+    const frot = T.forest && param(T.forest, 'rotate') && !pv ? r.next() * Math.PI * 2 : 0;
+    const forests: Layout['forests'] = (T.forest?.blobs ?? []).filter((b) => b.points.length >= 3).map((b) => {
+      const n = b.points.length, cx0 = b.points.reduce((s, p) => s + p[0], 0) / n, cy0 = b.points.reduce((s, p) => s + p[1], 0) / n;
+      const local = b.points.map((p) => [p[0] - cx0, p[1] - cy0] as [number, number]);
+      const c = Math.cos(frot), s = Math.sin(frot);
+      return { cx: (cx0 * c - cy0 * s) * 0.5, cy: (cx0 * s + cy0 * c) * 0.5, R: 0.5, shape: radialTable({ points: local }), rot: frot, // absolute: map coords ×0.5
+        edge: num(T.forest!, 'edge'), amount: num(T.forest!, 'amount') };
+    });
+    // water
+    const lt = T.lake, rt = T.river, pt = T.pond;
     const lakeDir = r.next() * Math.PI * 2;
-    const depositKind: DepositKind | null = has('iron-ore') ? 'iron' : has('copper-ore') ? 'copper' : has('stone-quarry') ? 'stone' : has('mud-quarry') ? 'mud' : has('salt-quarry') ? 'salt' : null;
-    const dr = rngFor(seed, 'deposit'); // own stream: adding deposits changes nothing else
-    const wr = rngFor(seed, 'water-shapes'); // own stream for water templates / banks
-    const wn = () => wr.next();
-    const slope = (s: [number, number]) => s[0] + wn() * (s[1] - s[0]);
-    const Wl = WATER.lake, Wp = WATER.pond, Wr = WATER.river;
-    const lakeShape = radialTable(pickTemplate(Wl.templates, wn) ?? { points: [] });
-    const riverLine = riverPolyline(pickTemplate(Wr.templates, wn) ?? { points: [] });
+    const lakeMode = lt ? String(param(lt, 'mode')) : 'nearby';
     const ponds: Layout['ponds'] = [];
-    if (has('bog')) {
-      const n = Wp.count[0] + Math.floor(wn() * (Wp.count[1] - Wp.count[0] + 1));
+    if (pt) {
+      const [c0, c1] = pair(param(pt, 'count'), [1, 3]), size = pair(param(pt, 'size'), [0.035, 0.065]);
+      const n = pv ? 1 : Math.round(c0 + wn() * (c1 - c0));
       for (let i = 0; i < n; i++) {
-        const a = wn() * Math.PI * 2, d = 0.12 + wn() * 0.26;
-        ponds.push({ cx: Math.cos(a) * d, cy: Math.sin(a) * d, radius: Wp.size[0] + wn() * (Wp.size[1] - Wp.size[0]),
-          shape: radialTable(pickTemplate(Wp.templates, wn) ?? { points: [] }), rot: wn() * Math.PI * 2, bank: bankWidth(Wp.depth, slope(Wp.bankSlope), SCENE_W) });
+        const a = wn() * Math.PI * 2, d = pv ? 0 : 0.12 + wn() * 0.26;
+        ponds.push({ cx: Math.cos(a) * d, cy: Math.sin(a) * d, radius: pv ? size[1] * 3 : size[0] + wn() * (size[1] - size[0]),
+          shape: radialTable({ points: (pt.points ?? []) as [number, number][] }), rot: pv ? 0 : wn() * Math.PI * 2,
+          bank: bankWidth(num(pt, 'depth'), between(pt, 'bankSlope'), SCENE_W), depth: num(pt, 'depth') });
       }
     }
-    const depAngle = dr.next() * Math.PI * 2, depDist = 0.17 + dr.next() * 0.12;
+    const qt = T.quarry;
+    const dr = rngFor(seed, 'deposit'); // own stream: adding deposits changes nothing else
+    // quarry: random direction, random distance from the centre (template 'distance', map units: 0.5 = the edge)
+    const [d0, d1] = qt ? pair(param(qt, 'distance'), [0.15, 0.3]) : [0.15, 0.3];
+    const depAngle = dr.next() * Math.PI * 2, depDist = d0 + dr.next() * (d1 - d0);
     l = {
-      seed, has, plateauR, plateauSlope,
-      plateauHeight: has('central-high-spot') ? 0.2 + r.next() * 0.1 + loc.tier * 0.02 : 0.03,
-      valleyAngle: r.next() * Math.PI,
-      river: riverKind && {
-        kind: riverKind, angle: r.next() * Math.PI,
-        amp: riverKind === 'curvy' ? 0.05 + r.next() * 0.06 : 0, freq: 1 + r.next() * 1.5, phase: r.next() * Math.PI * 2,
-        width: Wr.width[0] + r.next() * (Wr.width[1] - Wr.width[0]), loopR: 0.22 + r.next() * 0.08,
-        // template centre line in map units: along ±0.75, sideways ±0.25 (straight rivers: flattened)
-        line: riverLine.map(([u, v, w]) => [u * 0.75, v * 0.25 * (riverKind === 'direct' ? 0.3 : 1), w] as [number, number, number]),
-        bank: bankWidth(Wr.depth, slope(Wr.bankSlope), SCENE_W),
-      },
-      lake: lakeKind && {
-        kind: lakeKind, ringR: plateauR + plateauSlope * 0.7 + 0.06, ringW: 0.035 + r.next() * 0.035,
-        neck: lakeDir, cx: Math.cos(lakeDir) * 0.24, cy: Math.sin(lakeDir) * 0.14, radius: 0.09 + r.next() * 0.05,
-        shape: lakeShape, rot: wn() * Math.PI * 2, bank: bankWidth(Wl.depth, slope(Wl.bankSlope), SCENE_W),
-      },
+      seed, preview: pv, plateau, foot, climate,
+      valley: T.valley ? { angle: r.next() * Math.PI, ridge: num(T.valley, 'ridge'), width: num(T.valley, 'width') } : null,
+      perimeter: T.perimeter ? { moist: num(T.perimeter, 'moist'), fields: num(T.perimeter, 'fields') } : null,
+      fields: T.fields ? { threshold: num(T.fields, 'threshold') } : null,
+      bog: pt ? num(pt, 'bog') : null,
+      rocky: T.rocky ? { amount: num(T.rocky, 'amount'), scale: num(T.rocky, 'scale'), threshold: num(T.rocky, 'threshold') } : null,
+      forests,
+      river: rt ? {
+        kind: param(rt, 'mode') === 'loop' ? 'peninsula' : 'line', angle: pv ? 0 : r.next() * Math.PI,
+        width: (() => { const [a, b] = pair(param(rt, 'width'), [0.02, 0.032]); return a + r.next() * (b - a); })() * (pv ? 2 : 1),
+        loopR: 0.22 + r.next() * 0.08,
+        // centre line in map units: along ±0.5 (the map edge), sideways ±0.25 × straightness
+        line: riverPolyline({ points: (rt.points ?? []) as [number, number, number][] }).map(([u, v, w]) => [u * 0.5, v * 0.25 * num(rt, 'straight'), w] as [number, number, number]),
+        bank: bankWidth(num(rt, 'depth'), between(rt, 'bankSlope'), SCENE_W), depth: num(rt, 'depth'),
+      } : null,
+      lake: lt ? {
+        kind: lakeMode === 'island' ? 'island' : lakeMode === 'peninsula' ? 'peninsula' : 'nearby',
+        ringR: foot * 0.95 + 0.06, ringW: num(lt, 'ringWidth') * (pv ? 1 : 0.7 + r.next() * 0.6),
+        neck: lakeDir, cx: pv ? 0 : Math.cos(lakeDir) * 0.24, cy: pv ? 0 : Math.sin(lakeDir) * 0.14,
+        radius: num(lt, 'radius') * (pv ? 2 : 0.85 + r.next() * 0.3),
+        shape: radialTable({ points: (lt.points ?? []) as [number, number][] }), rot: pv ? 0 : wn() * Math.PI * 2,
+        bank: bankWidth(num(lt, 'depth'), between(lt, 'bankSlope'), SCENE_W), depth: num(lt, 'depth'),
+      } : null,
       ponds,
-      deposit: depositKind && { kind: depositKind, cx: Math.cos(depAngle) * depDist, cy: Math.sin(depAngle) * depDist, radius: 0.08 + dr.next() * 0.03 },
+      deposit: qt ? {
+        kind: String(param(qt, 'quarry')) as DepositKind, cx: Math.cos(depAngle) * depDist, cy: Math.sin(depAngle) * depDist, // random also in previews
+        radius: (() => { const [a, b] = pair(param(qt, 'radius'), [0.08, 0.11]); return a + dr.next() * (b - a); })(),
+      } : null,
     };
     // keep the deposit off rivers and lakes: try 8 directions, take the one farthest from water
     if (l.deposit) {
@@ -130,20 +180,6 @@ function layoutFor(worldSeed: number, loc: LocationDef): Layout {
         if (gap > dep.radius * 1.5) break; // first direction that is clear enough
       }
     }
-    // editor preview: one water body of the chosen kind / template in the middle
-    const pv = WATER.preview;
-    if (pv) {
-      const bank = (d: number, s: [number, number]) => bankWidth(d, (s[0] + s[1]) / 2, SCENE_W);
-      l.lake = null; l.river = null; l.ponds = [];
-      if (pv.kind === 'lake') {
-        l.lake = { kind: 'nearby', ringR: 0, ringW: 0, neck: 0, cx: 0, cy: 0, radius: 0.24, shape: radialTable(Wl.templates[pv.index] ?? { points: [] }), rot: 0, bank: bank(Wl.depth, Wl.bankSlope) };
-      } else if (pv.kind === 'pond') {
-        l.ponds = [{ cx: 0, cy: 0, radius: 0.2, shape: radialTable(Wp.templates[pv.index] ?? { points: [] }), rot: 0, bank: bank(Wp.depth, Wp.bankSlope) }];
-      } else {
-        l.river = { kind: 'curvy', angle: 0, amp: 0, freq: 0, phase: 0, width: (Wr.width[0] + Wr.width[1]) / 2 * 2.5, loopR: 0,
-          line: riverPolyline(Wr.templates[pv.index] ?? { points: [] }).map(([u, v, w]) => [u * 0.45, v * 0.2, w] as [number, number, number]), bank: bank(Wr.depth, Wr.bankSlope) };
-      }
-    }
     if (layoutCache.size > 500) layoutCache.clear();
     layoutCache.set(key, l);
   }
@@ -156,15 +192,10 @@ const smooth = (x: number, a: number, b: number) => {
 };
 const angleDiff = (a: number, b: number) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
 
-/** Distance (square units) from (px, py) to the river's centre line. */
+/** Distance (square units) from (px, py) to a looping (peninsula) river's centre line. */
 function riverDistance(river: NonNullable<Layout['river']>, px: number, py: number): number {
-  const c = Math.cos(river.angle), s = Math.sin(river.angle);
-  if (river.kind !== 'peninsula') {
-    const u = px * c + py * s, v = -px * s + py * c; // along / across the river axis
-    return Math.abs(v - river.amp * Math.sin(u * river.freq * Math.PI * 2 + river.phase));
-  }
-  // Peninsula: the river loops around the centre (a ~270° arc) and both ends run off to the
-  // map edge side by side, leaving a land neck between them.
+  // the river loops around the centre (a ~270° arc) and both ends run off to the map edge side
+  // by side, leaving a land neck between them
   const R = river.loopR, gap = 0.9; // radians of the neck
   const rad = Math.hypot(px, py), ang = Math.atan2(py, px);
   let d = angleDiff(ang, river.angle) > gap / 2 ? Math.abs(rad - R) : Infinity;
@@ -177,16 +208,11 @@ function riverDistance(river: NonNullable<Layout['river']>, px: number, py: numb
 }
 
 /**
- * Continuous terrain field at tile coords (x, y), built from the location's traits:
- *   central-high-spot – plateau/hill in the middle (flat, grassy, buildable top)
- *   valley            – ridges rise on two sides of a valley floor
- *   dry / wet         – less / more moisture and water
- *   fields, bog       – patches of crop fields / boggy ground
- *   river-*           – straight, meandering, or looping around the centre (peninsula)
- *   lake-*            – ring lake around a central island, ring lake with a land neck, or a lake off-centre
- *   perimeter-*       – the outskirts are wood, meadows or fields
- * Returns height h (~0..1), moisture, rockiness, field and bog masks. Pure – the client
- * samples it at any resolution for a smooth 3D surface.
+ * Continuous terrain field at tile coords (x, y), combined from the location's templates
+ * (traits, see templates.ts): high spot, climate, valley, perimeter, fields, bog + ponds, forests,
+ * rocky patches, lake, river and quarry deposit – each by its kind, shaped by its params / outline.
+ * Returns height h (~0..1), moisture, rockiness, field and bog masks, deposit and water
+ * environments. Pure – the client samples it at any resolution for a smooth 3D surface.
  */
 export function terrainField(worldSeed: number, loc: LocationDef, x: number, y: number): {
   h: number; moist: number; rock: number; field: number; bog: number; deposit: number;
@@ -198,39 +224,55 @@ export function terrainField(worldSeed: number, loc: LocationDef, x: number, y: 
   // square units (both axes scaled by the map width), origin at the centre
   const px = (x - SCENE_W / 2) / SCENE_W, py = (y - SCENE_H / 2) / SCENE_W;
   const r = Math.hypot(px, py) / 0.5; // 1 = horizontal map edge
+  const ang = Math.atan2(py, px);
   const outer = smooth(r, 0.62, 0.95); // 0 inside, 1 at the outskirts
+  const foot = L.foot;
 
   const noise = fbm(L.seed, nx * 4, ny * 3, 4);
-  const plateau = L.has('central-high-spot') ? 1 - smooth(r, L.plateauR, L.plateauR + L.plateauSlope) : 0;
-  const foot = L.plateauR + L.plateauSlope;
+  let plateau = 0, plateauH = 0;
+  if (L.plateau) {
+    const P = L.plateau, R = P.R * radialAt(P.shape, ang - P.rot);
+    plateau = 1 - smooth(r, R, R + P.slope);
+    plateauH = P.height * radialAt(P.heights, ang - P.rot);
+  }
   // The top is calmer (less noise) so it stays flat and buildable.
-  let h = 0.42 + plateau * L.plateauHeight + (noise - 0.5) * (0.3 - plateau * 0.22);
+  let h = 0.42 + plateau * plateauH + (noise - 0.5) * (0.3 - plateau * (L.plateau?.calm ?? 0));
   let moist = fbm(L.seed ^ 0x9e3779b9, nx * 3, ny * 3, 3) - plateau * 0.35 - (1 - smooth(r, foot, foot + 0.2)) * 0.12;
-  let rock = fbm(L.seed ^ 0x51ed270b, nx * 9, ny * 6, 2) + 4 * plateau * (1 - plateau) * 0.22; // more along the rim
+  // rock: only the plateau rim and 'rocky' patches get really rocky
+  let rock = fbm(L.seed ^ 0x51ed270b, nx * 9, ny * 6, 2) * 0.8 + 4 * plateau * (1 - plateau) * (L.plateau?.rimRock ?? 0);
+  if (L.rocky) rock += smooth(fbm(L.seed ^ 0x3c6ef372, nx * L.rocky.scale, ny * L.rocky.scale, 2), L.rocky.threshold, L.rocky.threshold + 0.12) * L.rocky.amount;
   let field = 0;
   let bog = 0;
 
-  if (L.has('valley')) {
-    const across = Math.abs(-px * Math.sin(L.valleyAngle) + py * Math.cos(L.valleyAngle));
-    h += smooth(across, 0.12, 0.45) * 0.2; // ridges on both sides
+  if (L.valley) {
+    const across = Math.abs(-px * Math.sin(L.valley.angle) + py * Math.cos(L.valley.angle));
+    h += smooth(across, L.valley.width, L.valley.width + 0.33) * L.valley.ridge; // ridges on both sides
     rock += smooth(across, 0.3, 0.5) * 0.08;
   }
-  if (L.has('dry')) { moist -= 0.18; h += 0.04; rock += 0.04; }
-  if (L.has('wet')) { moist += 0.12; h -= 0.03; }
+  moist += L.climate.moist;
+  h += L.climate.height;
+  rock += L.climate.rock;
 
   // Outskirts
-  if (L.has('perimeter-wood')) moist += outer * 0.4;
-  else if (L.has('perimeter-meadows')) moist -= outer * 0.45;
-  else moist += outer * 0.15;
-  if (L.has('perimeter-fields')) { field = Math.max(field, outer * 1.2); moist -= outer * 0.3; }
+  if (L.perimeter) {
+    moist += outer * L.perimeter.moist;
+    if (L.perimeter.fields > 0) field = Math.max(field, outer * L.perimeter.fields);
+  } else moist += outer * 0.15;
+
+  // Forests: template outlines make the ground moist enough for woods
+  for (const f of L.forests) {
+    const ax = px - f.cx, ay = py - f.cy;
+    const s = Math.hypot(ax, ay) - f.R * radialAt(f.shape, Math.atan2(ay, ax) - f.rot);
+    moist += (1 - smooth(s, -f.edge, f.edge)) * f.amount;
+  }
 
   // Crop fields in open, flat land between the centre and the outskirts
-  if (L.has('fields')) {
-    field = Math.max(field, smooth(fbm(L.seed ^ 0x2c1b3c6d, nx * 2.5, ny * 2, 3), 0.5, 0.56) * (1 - plateau) * smooth(r, foot, foot + 0.1));
+  if (L.fields) {
+    field = Math.max(field, smooth(fbm(L.seed ^ 0x2c1b3c6d, nx * 2.5, ny * 2, 3), L.fields.threshold, L.fields.threshold + 0.06) * (1 - plateau) * smooth(r, foot, foot + 0.1));
   }
   // Bog: low, flat, soggy patches just above the water line
-  if (L.has('bog')) {
-    bog = smooth(fbm(L.seed ^ 0x7f4a7c15, nx * 3, ny * 3, 3), 0.55, 0.62) * (1 - plateau);
+  if (L.bog !== null) {
+    bog = smooth(fbm(L.seed ^ 0x7f4a7c15, nx * 3, ny * 3, 3), L.bog, L.bog + 0.07) * (1 - plateau);
     h += (W + 0.012 + (fbm(L.seed ^ 0x1234, nx * 14, ny * 10, 2) - 0.5) * 0.04 - h) * bog * 0.9; // puddles dip below
   }
 
@@ -246,29 +288,29 @@ export function terrainField(worldSeed: number, loc: LocationDef, x: number, y: 
       depth = 1 - smooth(s, -lk.bank, 0);
       lakeEnv = 1 - smooth(s, 0, reach);
     } else {
-      const ringR = lk.ringR * (1 + (radialAt(lk.shape, Math.atan2(py, px) - lk.rot) - 1) * 0.5); // wobbly ring around the island
+      const ringR = lk.ringR * (1 + (radialAt(lk.shape, ang - lk.rot) - 1) * 0.5); // wobbly ring around the island
       const off = Math.abs(r - ringR);
       depth = 1 - smooth(off, lk.ringW, lk.ringW + lk.bank * 2);
       lakeEnv = 1 - smooth(off, lk.ringW + lk.bank * 2, lk.ringW + lk.bank * 2 + reach * 2);
       if (lk.kind === 'peninsula') {
-        const neck = smooth(angleDiff(Math.atan2(py, px), lk.neck), 0.35, 0.6);
+        const neck = smooth(angleDiff(ang, lk.neck), 0.35, 0.6);
         depth *= neck; // land neck towards the shore
         depth = Math.max(depth, (1 - smooth(r, ringR, ringR + lk.ringW * 2.5)) * smooth(r, ringR - lk.ringW, ringR) * neck);
         lakeEnv *= neck;
       }
     }
-    h += (W - WATER.lake.depth - h) * depth;
+    h += (W - lk.depth - h) * depth;
     rock -= depth;
     field *= 1 - depth;
     bog *= 1 - depth;
   }
-  // Ponds (bog locations): small template-shaped pools
+  // Ponds (bog template): small template-shaped pools
   for (const pd of L.ponds) {
     const ax = px - pd.cx, ay = py - pd.cy;
     const s = Math.hypot(ax, ay) - pd.radius * radialAt(pd.shape, Math.atan2(ay, ax) - pd.rot);
     const depth = 1 - smooth(s, -pd.bank, 0);
     pondEnv = Math.max(pondEnv, 1 - smooth(s, 0, reach));
-    h += (W - WATER.pond.depth - h) * depth;
+    h += (W - pd.depth - h) * depth;
     rock -= depth;
     field *= 1 - depth;
   }
@@ -286,8 +328,8 @@ export function terrainField(worldSeed: number, loc: LocationDef, x: number, y: 
     const channel = 1 - smooth(d, w * 0.6, w * 0.6 + L.river.bank);
     riverEnv = 1 - smooth(d, w * 0.6 + L.river.bank, w * 0.6 + L.river.bank + reach);
     const valley = 1 - smooth(d, w, w * 7);
-    h -= valley * plateau * L.plateauHeight * (L.river.kind === 'peninsula' ? 0.3 : 0.85); // cuts through the plateau
-    h += (W - WATER.river.depth - h) * channel; // runs below the water line
+    h -= valley * plateau * plateauH * (L.river.kind === 'peninsula' ? 0.3 : 0.85); // cuts through the plateau
+    h += (W - L.river.depth - h) * channel; // runs below the water line
     moist += valley * 0.1;
     rock -= channel;
     field *= 1 - channel;
@@ -321,7 +363,7 @@ export function depositOf(worldSeed: number, loc: LocationDef): { kind: DepositK
 }
 
 export function generateTerrain(worldSeed: number, loc: LocationDef): Terrain {
-  const key = `${worldSeed}:${loc.id}:${loc.traits?.join(',')}:${JSON.stringify(WATER.preview)}`;
+  const key = `${worldSeed}:${loc.id}:${loc.traits?.join(',')}:${loc.preview ? 'p' : ''}`;
   const cached = terrainCache.get(key);
   if (cached) return cached;
 

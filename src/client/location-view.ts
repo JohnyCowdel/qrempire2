@@ -7,12 +7,12 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import {
-  depositOf, generateTerrain, hash32, setWater, insideArea, locationNpcs, rngFor, SCENE_RADIUS, TERRAIN_LEVELS, terrainField, TILES,
+  cliffOf, depositOf, generateTerrain, hash32, setWater, waterLooks, insideArea, locationNpcs, rngFor, SCENE_RADIUS, TERRAIN_LEVELS, terrainField, TILES,
   type LocationDef, type SceneStructure, type Terrain,
 } from '../engine/index.ts';
 import { valueNoise } from '../engine/noise.ts';
 import {
-  ASSET_SEED, buildRoads, type RoadNetwork, mudMaterial, applyShore, waterMaskTexture, tuftVariants, barkMaterial, cliffRocks, cliffWeight, quarryGeometry, fieldPlotAt, rockMaterial, terrainMaterial, shellGrass, updateTreeWind, broadleafTree, coniferTree, cropGeometries, pickSpecies, speciesFoliageMaterial, speciesNames, speciesTint, speciesTree, type SpeciesName, foliageMaterial, cropItemsForTile, DECOR, fieldGroundColor, grassMaterial, groundMaterial, patchAmount, tuftGroundTint, grassTuftGeometry, inPatch, loadScatterParts, rockGeometry,
+  ASSET_SEED, setCliff, buildRoads, type RoadNetwork, mudMaterial, applyShore, waterMaskTexture, tuftVariants, barkMaterial, cliffRocks, cliffWeight, quarryGeometry, fieldPlotAt, rockMaterial, terrainMaterial, shellGrass, updateTreeWind, broadleafTree, coniferTree, cropGeometries, pickSpecies, speciesFoliageMaterial, speciesNames, speciesTint, speciesTree, type SpeciesName, foliageMaterial, cropItemsForTile, DECOR, fieldGroundColor, grassMaterial, groundMaterial, patchAmount, tuftGroundTint, grassTuftGeometry, inPatch, loadScatterParts, rockGeometry,
   type CropItem,
 } from './location-decor.ts';
 import { RtsCamera } from './rts-camera.ts';
@@ -221,10 +221,15 @@ export class LocationView {
   /** Called with a structure kind when the player clicks a building. */
   onSelect?: (kind: string) => void;
 
-  private readonly canvas: HTMLCanvasElement;
-  private readonly renderer: THREE.WebGLRenderer;
+  private readonly canvas!: HTMLCanvasElement;
+  private readonly renderer!: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
-  private readonly rts: RtsCamera;
+  /** Everything the location consists of (the editor embeds just this). */
+  readonly root: THREE.Object3D;
+  private readonly embedded: boolean;
+  private withTrees = true;
+  private withGrass = true;
+  private readonly rts!: RtsCamera;
   private readonly worldSeed: number;
   private readonly loc: LocationDef;
   private readonly terrain: Terrain;
@@ -232,7 +237,7 @@ export class LocationView {
   private readonly structureGroup = new THREE.Group();
   private readonly npcGroup = new THREE.Group();
   private readonly npcObjects = new Map<string, { obj: THREE.Object3D; last: THREE.Vector3 }>();
-  private readonly ring: THREE.Mesh;
+  private readonly ring!: THREE.Mesh;
   private structuresKey = '';
   private highlight?: string;
   private water!: { mesh: THREE.Mesh; update: (time: number) => void };
@@ -248,15 +253,30 @@ export class LocationView {
   private shellUniforms?: { uTime: { value: number }; uSway: { value: number } };
   private last = performance.now();
 
-  constructor(canvas: HTMLCanvasElement, worldSeed: number, loc: LocationDef, now: () => number = Date.now) {
-    this.canvas = canvas;
+  /**
+   * canvas: the page's viewport (own renderer, camera, animation loop). Or `{ embed: group }`: just
+   * build the location's content into that group (asset editor previews; call update(time) yourself).
+   */
+  constructor(canvas: HTMLCanvasElement | { embed: THREE.Object3D; trees?: boolean; grass?: boolean }, worldSeed: number, loc: LocationDef, now: () => number = Date.now) {
     this.worldSeed = worldSeed;
     this.loc = loc;
     this.now = now;
-    this.quality = applyQuality(VIEW); // caps detail for the chosen graphics quality (see quality.ts)
+    this.embedded = !(canvas instanceof HTMLCanvasElement);
+    this.root = canvas instanceof HTMLCanvasElement ? this.scene : canvas.embed;
+    this.quality = this.embedded ? 'high' : applyQuality(VIEW); // caps detail for the chosen graphics quality (see quality.ts)
     setWater({ heightScale: VIEW.heightScale }); // bank slopes are in world units
+    setCliff(cliffOf(loc.traits ?? [])); // this location's cliff type
     this.terrain = generateTerrain(worldSeed, loc);
     const { width: W, height: H } = this.terrain;
+    if (!(canvas instanceof HTMLCanvasElement)) { // editor preview: content only (trees / grass only where relevant – they are slow)
+      this.withTrees = canvas.trees ?? true;
+      this.withGrass = canvas.grass ?? true;
+      this.buildTerrain();
+      this.buildDecor();
+      if (DECOR.shells.enabled && this.withGrass) this.buildShellGrass();
+      return;
+    }
+    this.canvas = canvas;
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(VIEW.maxPixelRatio, window.devicePixelRatio || 1));
@@ -282,7 +302,7 @@ export class LocationView {
     if (VIEW.haze) this.scene.fog = new THREE.FogExp2(VIEW.hazeColor, VIEW.hazeDensity);
 
     // Lights: cool sky/ground fill + a low, warm sun with long shadows over the whole map.
-    this.scene.add(new THREE.HemisphereLight(VIEW.ambientSky, VIEW.ambientGround, VIEW.ambientIntensity));
+    this.root.add(new THREE.HemisphereLight(VIEW.ambientSky, VIEW.ambientGround, VIEW.ambientIntensity));
     const sun = new THREE.DirectionalLight(VIEW.sunColor, VIEW.sunIntensity);
     const dir = new THREE.Vector3(...VIEW.sunDirection).normalize();
     sun.position.set(W / 2 + dir.x * 70, dir.y * 70, H / 2 + dir.z * 70);
@@ -293,12 +313,12 @@ export class LocationView {
     Object.assign(sun.shadow.camera, { left: -ext, right: ext, top: ext, bottom: -ext, near: 1, far: 200 });
     sun.shadow.bias = -0.0006;
     sun.shadow.normalBias = 0.03;
-    this.scene.add(sun, sun.target);
+    this.root.add(sun, sun.target);
 
     this.buildTerrain();
     this.buildDecor();
     if (DECOR.shells.enabled) this.buildShellGrass();
-    this.scene.add(this.structureGroup, this.npcGroup);
+    this.root.add(this.structureGroup, this.npcGroup);
 
     this.ring = new THREE.Mesh(new THREE.RingGeometry(0.85, 1.05, 32), new THREE.MeshBasicMaterial({ color: '#ffd700', transparent: true, side: THREE.DoubleSide, depthWrite: false }));
     this.ring.rotation.x = -Math.PI / 2;
@@ -306,6 +326,19 @@ export class LocationView {
     this.rts = new RtsCamera(canvas, new THREE.Vector3(W / 2, 0, H / 2), { cx: W / 2, cz: H / 2, radius: SCENE_RADIUS - 2 });
     this.rts.onClick = (x, y) => this.pick(x, y);
     this.renderer.setAnimationLoop(this.frame);
+  }
+
+  /** Embedded mode: animate water, grass and trees. */
+  update(time: number): void {
+    this.water?.update(time);
+    if (this.grassUniforms) this.grassUniforms.uTime.value = time;
+    if (this.shellUniforms) { this.shellUniforms.uTime.value = time; this.shellUniforms.uSway.value = DECOR.grassSway; }
+    updateTreeWind(time);
+  }
+  /** Embedded mode: free GPU resources (the water's reflection target, geometries). */
+  dispose(): void {
+    (this.water?.mesh as { dispose?: () => void } | undefined)?.dispose?.();
+    this.root.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
   }
 
   setStructures(structures: SceneStructure[]): void {
@@ -363,6 +396,7 @@ export class LocationView {
     const hAt = (x: number, z: number) => this.heightAt(x, z);
     const L = TERRAIN_LEVELS, P = VIEW.colors;
     const mudDeposit = depositOf(this.worldSeed, this.loc)?.kind === 'mud', mudGround = new THREE.Color(DECOR.quarries.mud.color);
+    const looks = waterLooks(this.loc.traits ?? []);
     const shoreColors = { grass: P.grass, field: DECOR.fields.soilColor, sand: P.sand, rock: P.rock, path: '#8a7350' };
     const sand = new THREE.Color(P.sand), grass = new THREE.Color(P.grass), forest = new THREE.Color(P.forest), rock = new THREE.Color(P.rock);
     const bogColor = new THREE.Color(P.bog);
@@ -396,7 +430,7 @@ export class LocationView {
         c.lerp(bogColor, ss(bog, L.bog - 0.05, L.bog + 0.05));
         tuftGroundTint(DECOR.tufts.reed, c, ss(bog, L.bog - 0.05, L.bog + 0.1)); // reed beds
         if (mudDeposit && deposit > 0) { c.lerp(mudGround, deposit * 0.9); towards(4, deposit * 0.9); } // trodden mud around a mud quarry
-        applyShore({ lake, pond, river }, h, L.water, c, w, shoreColors); // shore + bed textures of the nearby water (DECOR.water)
+        applyShore({ lake, pond, river }, h, L.water, c, w, shoreColors, looks); // shore + bed textures of the nearby water (its template)
         c.lerp(rock, ss(rockiness, L.rockiness - 0.05, L.rockiness + 0.03));
         towards(3, ss(rockiness, L.rockiness - 0.05, L.rockiness + 0.03));
         // roads on top of everything (dusty road = the path texture)
@@ -434,13 +468,13 @@ export class LocationView {
     const groundMat = terrainMaterial(new THREE.Vector2(W / 2, H / 2), dep && (dep.kind === 'iron' || dep.kind === 'copper') ? { ore: dep.kind, x: dep.x, z: dep.y, radius: dep.radius } : undefined);
     const ground = new THREE.Mesh(geo, groundMat.material);
     ground.receiveShadow = true;
-    this.scene.add(ground);
+    this.root.add(ground);
 
     // Lakes/rivers: a reflective, rippling water plane at height 0, visible where the ground dips
     // below it. Knobs: WATER_SURFACE in water-surface.ts.
     const mask = waterMaskTexture((x, z) => terrainField(this.worldSeed, this.loc, x, z), -M, -M, W + 2 * M, 2); // lake / pond / river looks
-    this.water = createWater(W + 2 * M, W / 2, H / 2, new THREE.Vector3(...VIEW.sunDirection), { mask, x0: -M, z0: -M, size: W + 2 * M });
-    this.scene.add(this.water.mesh);
+    this.water = createWater(W + 2 * M, W / 2, H / 2, new THREE.Vector3(...VIEW.sunDirection), () => looks, { mask, x0: -M, z0: -M, size: W + 2 * M });
+    this.root.add(this.water.mesh);
 
     if (VIEW.edgeFog) this.buildEdgeFog();
     if (VIEW.mist) this.buildMist();
@@ -479,7 +513,7 @@ export class LocationView {
       mist.position.set(W / 2, 0.35 + l * 0.7, H / 2);
       mist.renderOrder = 4;
       this.mistLayers.push(mist);
-      this.scene.add(mist);
+      this.root.add(mist);
     }
   }
 
@@ -525,7 +559,7 @@ export class LocationView {
       layer.position.set(W / 2, THREE.MathUtils.lerp(-2, top, i / Math.max(1, VIEW.edgeFogLayers - 1)), H / 2);
       layer.renderOrder = 5;
       this.fogLayers.push(layer);
-      this.scene.add(layer);
+      this.root.add(layer);
     }
   }
 
@@ -570,7 +604,7 @@ export class LocationView {
     const shells = shellGrass(0, 0, W, H, (x, z) => this.heightAt(x, z), maskAt);
     if (!shells) return;
     this.shellUniforms = shells.uniforms;
-    this.scene.add(shells.mesh);
+    this.root.add(shells.mesh);
   }
 
   private buildDecor(): void {
@@ -595,6 +629,7 @@ export class LocationView {
         const r = rngFor(seed, x, y);
         const at = (pad = 0) => ({ x: x + pad + r.next() * (1 - 2 * pad), z: y + pad + r.next() * (1 - 2 * pad) });
         const tree = (s0: number, s1: number, coniferChance: number) => {
+          if (!this.withTrees) return;
           const item = { ...at(), s: s0 + r.next() * (s1 - s0), rot: r.next() * Math.PI * 2, tint: r.pick(leafTints), v: 0 };
           const isConifer = r.chance(coniferChance);
           const v = r.int(0, D.treeVariants - 1);
@@ -604,6 +639,7 @@ export class LocationView {
           } else (isConifer ? conifer : broadleaf).push({ ...item, v });
         };
         const tufts = (n: number, into = grass, masked = true) => {
+          if (!this.withGrass) return;
           if (DECOR.shells.enabled && into === grass) return; // meadow grass = shell layers (buildShellGrass)
           for (let i = 0; i < n; i++) {
             const p = at();
@@ -659,7 +695,7 @@ export class LocationView {
         im.setMatrixAt(i, m);
         im.setColorAt(i, it.tint);
       });
-      this.scene.add(im);
+      this.root.add(im);
     };
 
     const bark = lambert(DECOR.barkColor);
@@ -728,7 +764,7 @@ export class LocationView {
     if (cr.rocks) {
       const rockMesh = new THREE.Mesh(cr.rocks, rockMaterial(undefined, true).material); // grass / moss on their flat tops
       rockMesh.castShadow = rockMesh.receiveShadow = true;
-      this.scene.add(rockMesh);
+      this.root.add(rockMesh);
     }
     for (let k = 0; k < D.rockVariants; k++) {
       place(rockGeometry(ASSET_SEED, k), stoneMat, cr.rubble.filter((s) => s.v === k).map((s) => ({ ...s, tint: white })), true);

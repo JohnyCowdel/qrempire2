@@ -4,8 +4,8 @@
 // localStorage; the location page merges the saved settings into DECOR when it loads.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { radialAt, radialTable, riverPolyline, rngFor, setWater, TERRAIN_LEVELS, terrainField, WATER, type LocationDef, type WaterKind } from '../engine/index.ts';
-import { createWater } from './water-surface.ts';
+import { rngFor, setTemplates, type TemplateKind, type TerrainTemplate } from '../engine/index.ts';
+import { createTemplateEditor } from './template-editor.ts';
 import {
   ASSET_SEED, roadField, mudMaterial, applyShore, SURFACES, waterMaskTexture, tuftVariants, barkMaterial, cliffRocks, cliffWeight, quarryGeometry, fieldPlotAt, rockMaterial, terrainMaterial, shellGrass, updateTreeWind, broadleafTree, coniferTree, cropGeometries, speciesFoliageMaterial, speciesTint, speciesTree, type SpeciesName, foliageMaterial, cropItemsForTile, DECOR, DECOR_STORAGE_KEY, decorDefaults, DEFAULT_SCATTER, fieldGroundColor,
   groundMaterial, patchAmount, tuftGroundTint, type CropItem,
@@ -81,13 +81,7 @@ const TABS: Record<string, Knob[]> = {
     ['rockTexture.bump', 0, 4, 0.05], ['rockTexture.cracks', 0, 1, 0.01],
     ['#Grass / moss on top (mossy stones, cliff ledges)'], ['rockTexture.moss', 0, 1, 0.01], ['rockTexture.mossColor'], ['rockTexture.mossHeight', 0, 1, 0.01],
   ],
-  Cliffs: [
-    ['#Steep ground (painted)'], ['cliffs.minSlope', 0.2, 3, 0.05], ['cliffs.fullSlope', 0.3, 4, 0.05], ['cliffs.p1', 0.05, 3, 0.01], ['cliffs.color'],
-    ['#Rocks (top edge to foot)'], ['cliffs.gridSize', 0.3, 4, 0.05], ['cliffs.protrude', -0.5, 0.5, 0.01], ['cliffs.bulge', 0, 1, 0.01], ['cliffs.depth', 0, 2, 0.01],
-    ['cliffs.gridJitter', 0, 1.5, 0.01], ['cliffs.reachJitter', 0, 0.6, 0.01], ['cliffs.chamfer', 0, 0.5, 0.01], ['cliffs.sink', -1, 1, 0.01],
-    ['#Rubble (uses the bare stone variants)'], ['cliffs.rubblePerRock', 0, 12, 1], ['cliffs.rubbleSize', 0.02, 0.6, 0.01],
-    ['#Moss on the stone tops: Stones tab'],
-  ],
+  Cliffs: [],
   Quarries: [
     ['quarries.variants', 1, 6, 1], ['quarries.boulders', 0, 30, 1], ['quarries.boulderSize', 0.1, 1.2, 0.01],
     ['#Mud quarry (1st column)'], ['quarries.mud.width', 1, 6, 0.1], ['quarries.mud.mounds', 0, 20, 1], ['quarries.mud.moundSize', 0.1, 1.2, 0.01],
@@ -104,21 +98,10 @@ const TABS: Record<string, Knob[]> = {
       [`quarries.${k}.color`], [`quarries.${k}.oreColor`], [`quarries.${k}.veinColor`], [`quarries.${k}.veinAmount`, 0, 1, 0.01], [`quarries.${k}.veinScale`, 0.5, 15, 0.1],
     ]),
   ],
-  Water: [
-    ['#Lake'], ['water.lake.depth', 0.01, 0.3, 0.005], ['water.lake.bankSlope', 0.1, 4, 0.05],
-    ['water.lake.color'], ['water.lake.opacity', 0, 1, 0.01], ['water.lake.reflectivity', 0, 1, 0.01],
-    ['water.lake.waveScale', 0.1, 6, 0.05], ['water.lake.waveSpeed', 0, 4, 0.05], ['water.lake.waveStrength', 0, 0.15, 0.002],
-    ['water.lake.shoreTexture'], ['water.lake.shoreWidth', 0, 0.15, 0.002], ['water.lake.bedTexture'],
-    ['#Bog / pond'], ['water.pond.depth', 0.01, 0.3, 0.005], ['water.pond.bankSlope', 0.1, 4, 0.05], ['water.pond.count', 0, 8, 1], ['water.pond.size', 0.01, 0.15, 0.002],
-    ['water.pond.color'], ['water.pond.opacity', 0, 1, 0.01], ['water.pond.reflectivity', 0, 1, 0.01],
-    ['water.pond.waveScale', 0.1, 6, 0.05], ['water.pond.waveSpeed', 0, 4, 0.05], ['water.pond.waveStrength', 0, 0.15, 0.002],
-    ['water.pond.shoreTexture'], ['water.pond.shoreWidth', 0, 0.15, 0.002], ['water.pond.bedTexture'],
-    ['#River'], ['water.river.depth', 0.01, 0.3, 0.005], ['water.river.bankSlope', 0.1, 4, 0.05], ['water.river.width', 0.005, 0.08, 0.001],
-    ['water.river.color'], ['water.river.opacity', 0, 1, 0.01], ['water.river.reflectivity', 0, 1, 0.01],
-    ['water.river.waveScale', 0.1, 6, 0.05], ['water.river.waveSpeed', 0, 4, 0.05], ['water.river.waveStrength', 0, 0.15, 0.002],
-    ['water.river.shoreTexture'], ['water.river.shoreWidth', 0, 0.15, 0.002], ['water.river.bedTexture'],
-    ['#Bank slope = height drop per tile (min / max: each water body picks one in between)'],
-  ],
+  Water: [],
+  'High spot': [],
+  Forest: [],
+  Traits: [],
   Roads: [
     ['#Layout (roads enter from the map edge, foot paths branch off)'], ['roads.count', 0, 6, 1], ['roads.stoneRoadMinTier', 1, 4, 1],
     ['roads.hubRadius', 0.5, 8, 0.1], ['roads.slopeCost', 0, 40, 0.5], ['roads.pathToQuarry'], ['roads.pathToWater'],
@@ -257,229 +240,6 @@ function speciesPreview(names: SpeciesName[]): void {
   });
 }
 
-// ---- Water tab: shape templates (vector editor) + preview ----
-let wKind: WaterKind = 'lake', wIndex = 0;
-let editorWater: { mesh: THREE.Mesh; update: (t: number) => void } | undefined;
-type ShapePts = { points: number[][] };
-const shapeList = () => DECOR.water[wKind].templates as ShapePts[];
-
-/** A new template: a wobbly blob (lake / pond) or a gentle S-curve (river). */
-function defaultShape(kind: WaterKind, k: number): ShapePts {
-  if (kind === 'river') return { points: [[-1, 0, 1], [-0.3, 0.3 * (k % 2 ? 1 : -1), 1], [0.4, -0.2 * (k % 2 ? 1 : -1), 1.1], [1, 0, 1]] };
-  return { points: Array.from({ length: 8 }, (_, i) => {
-    const a = (i / 8) * Math.PI * 2, r = 0.85 + 0.25 * Math.sin(i * 2.3 + k * 1.7);
-    return [Math.cos(a) * r, Math.sin(a) * r];
-  }) };
-}
-
-function waterShapePanel(): void {
-  const list = shapeList();
-  if (!list.length) list.push(defaultShape(wKind, 0));
-  wIndex = Math.min(wIndex, list.length - 1);
-  knobsEl.append(Object.assign(document.createElement('h3'), { textContent: 'Shape templates (locations pick one each)' }));
-  const head = document.createElement('div');
-  head.className = 'shape-head';
-  const sel = (options: string[], labels: string[], value: string, onChange: (v: string) => void) => {
-    const s = document.createElement('select');
-    options.forEach((o, i) => s.append(Object.assign(document.createElement('option'), { value: o, textContent: labels[i], selected: o === value })));
-    s.onchange = () => onChange(s.value);
-    return s;
-  };
-  const btn = (text: string, onClick: () => void) => Object.assign(document.createElement('button'), { className: 'btn', textContent: text, onclick: onClick });
-  head.append(
-    sel(['lake', 'pond', 'river'], ['Lake', 'Bog / pond', 'River'], wKind, (v) => { wKind = v as WaterKind; wIndex = 0; renderPanel(); rebuild(); }),
-    sel(list.map((_, i) => String(i)), list.map((_, i) => `template ${i + 1} / ${list.length}`), String(wIndex), (v) => { wIndex = Number(v); renderPanel(); rebuild(); }),
-    btn('+ new', () => { list.push(defaultShape(wKind, list.length)); wIndex = list.length - 1; changed(); renderPanel(); }),
-    btn('− delete', () => { if (list.length > 1) { list.splice(wIndex, 1); wIndex = Math.max(0, wIndex - 1); changed(); renderPanel(); } }),
-  );
-  knobsEl.append(head);
-  knobsEl.append(Object.assign(document.createElement('p'), {
-    className: 'hint',
-    textContent: `Edit the shape in the viewport, on the see-through plane: drag the yellow points · double-click the plane: add a point · right-click a point: remove it${wKind === 'river' ? ' · mouse wheel on a point: river width there' : ''}. The terrain updates when you let go.`,
-  }));
-}
-
-// ---- viewport shape handles (Water tab): yellow points on a see-through plane above the preview ----
-const HANDLE_Y = 1.5; // height of the editing plane (low: less parallax against the terrain)
-interface HandleState { group: THREE.Group; spheres: THREE.Mesh[]; outline: THREE.Line; rings: THREE.Line[]; k: number; shape: ShapePts }
-let handles: HandleState | undefined;
-const handleMat = new THREE.MeshBasicMaterial({ color: '#ffd66b', depthTest: false });
-const handleHot = new THREE.MeshBasicMaterial({ color: '#fff3c4', depthTest: false });
-const lineMat = new THREE.LineBasicMaterial({ color: '#9fd3f0', depthTest: false });
-const ringMat = new THREE.LineDashedMaterial({ color: '#ffd66b', depthTest: false, dashSize: 0.3, gapSize: 0.2 });
-
-/** Template point -> preview world (x, z), and back. Lakes / ponds: scaled so the outline matches the terrain. */
-const toWorld = (p: number[], k: number): [number, number] => (wKind === 'river' ? [p[0] * 18, p[1] * 8] : [p[0] * k, p[1] * k]);
-const fromWorld = (x: number, z: number, k: number): [number, number] => (wKind === 'river' ? [Math.max(-1, Math.min(1, x / 18)), z / 8] : [x / k, z / k]);
-
-function outlinePoints(shape: ShapePts, k: number): THREE.Vector3[] {
-  if (wKind === 'river') {
-    return riverPolyline({ points: shape.points as [number, number, number][] }).slice(1, -1).map(([u, v]) => new THREE.Vector3(u * 18, HANDLE_Y, v * 8));
-  }
-  const table = radialTable({ points: shape.points as [number, number][] });
-  const mean = shape.points.reduce((s, [x, y]) => s + Math.hypot(x, y), 0) / Math.max(1, shape.points.length);
-  return Array.from({ length: 129 }, (_, i) => {
-    const a = -Math.PI + (i / 128) * Math.PI * 2, r = radialAt(table, a) * mean * k;
-    return new THREE.Vector3(Math.cos(a) * r, HANDLE_Y, Math.sin(a) * r);
-  });
-}
-
-function refreshHandles(): void {
-  if (!handles) return;
-  const { shape, k } = handles;
-  handles.spheres.forEach((s, i) => { const [x, z] = toWorld(shape.points[i], k); s.position.set(x, HANDLE_Y, z); });
-  handles.outline.geometry.setFromPoints(outlinePoints(shape, k));
-  handles.rings.forEach((ring, i) => {
-    const [x, z] = toWorld(shape.points[i], k);
-    ring.position.set(x, HANDLE_Y, z);
-    ring.scale.setScalar(shape.points[i][2] ?? 1);
-  });
-}
-
-/** Build the handles for the current template (called by the Water preview). */
-function buildHandles(): void {
-  const shape = shapeList()[wIndex];
-  const group = new THREE.Group();
-  // the editing plane: see-through, above the terrain
-  const plane = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshBasicMaterial({ color: '#9fd3f0', transparent: true, opacity: 0.1, depthWrite: false, side: THREE.DoubleSide }));
-  plane.rotation.x = -Math.PI / 2;
-  plane.position.y = HANDLE_Y;
-  plane.renderOrder = 9;
-  plane.name = 'edit-plane';
-  group.add(plane);
-  // lake / pond: points scaled so their mean radius matches the outline on the terrain (preview radius 0.24 / 0.2 of 40 tiles)
-  const mean = shape.points.reduce((s, [x, y]) => s + Math.hypot(x, y), 0) / Math.max(1, shape.points.length);
-  const k = ((wKind === 'pond' ? 0.2 : 0.24) * 40) / Math.max(0.05, mean);
-  const outline = new THREE.Line(new THREE.BufferGeometry(), lineMat);
-  outline.renderOrder = 10;
-  group.add(outline);
-  const sphereGeo = new THREE.SphereGeometry(0.35, 12, 8);
-  const spheres = shape.points.map((_, i) => {
-    const s = new THREE.Mesh(sphereGeo, handleMat);
-    s.renderOrder = 11;
-    s.userData.index = i;
-    group.add(s);
-    return s;
-  });
-  const rings = wKind === 'river' ? shape.points.map(() => {
-    const ringPts = Array.from({ length: 33 }, (_, i) => new THREE.Vector3(Math.cos((i / 32) * Math.PI * 2) * 1.2, 0, Math.sin((i / 32) * Math.PI * 2) * 1.2));
-    const ring = new THREE.Line(new THREE.BufferGeometry().setFromPoints(ringPts), ringMat);
-    ring.computeLineDistances();
-    ring.renderOrder = 10;
-    group.add(ring);
-    return ring;
-  }) : [];
-  handles = { group, spheres, outline, rings, k, shape };
-  refreshHandles();
-  preview.add(group);
-}
-
-// pointer interaction in the viewport (registered once; only active on the Water tab)
-{
-  const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), planeHit = new THREE.Plane(new THREE.Vector3(0, 1, 0), -HANDLE_Y), hit = new THREE.Vector3();
-  let drag: number | null = null, hot: THREE.Mesh | null = null;
-  const aim = (e: MouseEvent) => {
-    const rect = canvas.getBoundingClientRect();
-    ndc.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
-    ray.setFromCamera(ndc, camera);
-  };
-  const pick = (e: MouseEvent): THREE.Mesh | null => {
-    if (tab !== 'Water' || !handles) return null;
-    aim(e);
-    return (ray.intersectObjects(handles.spheres)[0]?.object as THREE.Mesh) ?? null;
-  };
-  const onPlane = (e: MouseEvent): [number, number] | null => {
-    aim(e);
-    return ray.ray.intersectPlane(planeHit, hit) ? [hit.x, hit.z] : null;
-  };
-  canvas.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
-    const h = pick(e);
-    if (!h) return;
-    drag = h.userData.index;
-    controls.enabled = false; // runs before OrbitControls (capture), so the camera stays put
-    canvas.setPointerCapture(e.pointerId);
-  }, { capture: true });
-  canvas.addEventListener('pointermove', (e) => {
-    if (drag === null || !handles) {
-      const h = pick(e); // hover highlight
-      if (hot !== h) { if (hot) hot.material = handleMat; hot = h; if (hot) hot.material = handleHot; canvas.style.cursor = hot ? 'grab' : ''; }
-      return;
-    }
-    const at = onPlane(e);
-    if (!at) return;
-    const p = handles.shape.points[drag], [u, v] = fromWorld(at[0], at[1], handles.k);
-    p[0] = u;
-    p[1] = v;
-    refreshHandles();
-  });
-  canvas.addEventListener('pointerup', () => {
-    if (drag === null) return;
-    drag = null;
-    controls.enabled = true;
-    changed(); // save + rebuild the terrain preview
-  });
-  canvas.addEventListener('dblclick', (e) => {
-    if (tab !== 'Water' || !handles || pick(e)) return;
-    const at = onPlane(e);
-    if (!at) return;
-    const [u, v] = fromWorld(at[0], at[1], handles.k);
-    handles.shape.points.push(wKind === 'river' ? [u, v, 1] : [u, v]);
-    changed();
-  });
-  canvas.addEventListener('contextmenu', (e) => {
-    const h = pick(e);
-    if (!h || !handles) return;
-    e.preventDefault();
-    if (handles.shape.points.length > (wKind === 'river' ? 2 : 3)) { handles.shape.points.splice(h.userData.index, 1); changed(); }
-  });
-  canvas.addEventListener('wheel', (e) => {
-    if (wKind !== 'river') return;
-    const h = pick(e);
-    if (!h || !handles) return;
-    e.preventDefault();
-    e.stopImmediatePropagation(); // no camera zoom while resizing the river
-    const p = handles.shape.points[h.userData.index];
-    p[2] = Math.max(0.2, Math.min(4, (p[2] ?? 1) * (e.deltaY < 0 ? 1.1 : 0.9)));
-    refreshHandles();
-    changed();
-  }, { capture: true, passive: false });
-}
-
-/** Preview: a 40×40 tile patch with just the selected template, generated by the real terrain code. */
-function waterPreview(): void {
-  const L = TERRAIN_LEVELS, size = 40, N = 100;
-  WATER.preview = { kind: wKind, index: wIndex };
-  const loc: LocationDef = { id: 'water-preview', name: 'preview', type: 'hut', tier: 1, lat: 0, lng: 0, traits: [] };
-  const field = (x: number, z: number) => terrainField(SEED, loc, x + size / 2, z + size / 2);
-  const colors = { grass: '#7aa34a', field: DECOR.fields.soilColor, sand: '#c9b27a', rock: '#8f887c', path: '#8a7350' };
-  const g = new THREE.PlaneGeometry(size, size, N, N);
-  g.rotateX(-Math.PI / 2);
-  const pos = g.getAttribute('position'), col: number[] = [], w4: number[] = [], wp: number[] = [], c = new THREE.Color();
-  for (let i = 0; i < pos.count; i++) {
-    const t = field(pos.getX(i), pos.getZ(i));
-    pos.setY(i, (t.h - L.water) * 8);
-    c.set(colors.grass);
-    const w = [1, 0, 0, 0, 0];
-    applyShore(t, t.h, L.water, c, w, colors);
-    if (t.h < L.water) c.multiplyScalar(0.75);
-    col.push(c.r, c.g, c.b);
-    w4.push(w[0], w[1], w[2], w[3]);
-    wp.push(w[4]);
-  }
-  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-  g.setAttribute('aW', new THREE.Float32BufferAttribute(w4, 4));
-  g.setAttribute('aPath', new THREE.Float32BufferAttribute(wp, 1));
-  g.computeVertexNormals();
-  const ground = new THREE.Mesh(g, terrainMat.material);
-  ground.receiveShadow = true;
-  const mask = waterMaskTexture(field, -size / 2, -size / 2, size, 2);
-  editorWater = createWater(size, 0, 0, sun.position.clone().normalize(), { mask, x0: -size / 2, z0: -size / 2, size });
-  preview.add(ground, editorWater.mesh);
-  WATER.preview = null;
-  buildHandles();
-}
-
 const builders: Record<string, () => void> = {
   Roads() {
     // the three road kinds as gentle curves across a meadow
@@ -505,7 +265,10 @@ const builders: Record<string, () => void> = {
     preview.add(m);
     camera.position.set(0, 9, 11);
   },
-  Water() { waterPreview(); camera.position.set(0, 30, 30); },
+  Water: () => { templates.preview(TEMPLATE_TABS.Water); camera.position.set(0, 30, 30); controls.target.set(0, 0, 0); },
+  'High spot': () => { templates.preview(TEMPLATE_TABS['High spot']); camera.position.set(0, 30, 30); controls.target.set(0, 0, 0); },
+  Forest: () => { templates.preview(TEMPLATE_TABS.Forest); camera.position.set(0, 30, 30); controls.target.set(0, 0, 0); },
+  Traits: () => { templates.preview(TEMPLATE_TABS.Traits); camera.position.set(0, 30, 30); controls.target.set(0, 0, 0); },
   Broadleaf: () => speciesPreview(['oak', 'birch', 'aspen']),
   Conifers: () => speciesPreview(['spruce', 'pine']),
   Trees() {
@@ -562,37 +325,7 @@ const builders: Record<string, () => void> = {
       }
     });
   },
-  Cliffs() {
-    // a hill with steep sides (and a gentle ramp) – the rock skin covers only the steep parts
-    const hAt = (x: number, z: number) => {
-      const r = Math.hypot(x * 0.9, z) + (Math.sin(Math.atan2(z, x) * 3) * 0.6);
-      return 2.6 * (1 - THREE.MathUtils.smoothstep(r, 2.5, 4.2)) + 0.6 * (1 - THREE.MathUtils.smoothstep(Math.hypot(x - 4, z + 3), 0, 3));
-    };
-    const g = new THREE.PlaneGeometry(16, 16, 96, 96);
-    g.rotateX(-Math.PI / 2);
-    const pos = g.getAttribute('position'), col: number[] = [], w4: number[] = [], wp: number[] = [];
-    for (let i = 0; i < pos.count; i++) {
-      pos.setY(i, hAt(pos.getX(i), pos.getZ(i)));
-      col.push(0.48, 0.64, 0.29);
-      w4.push(1, 0, 0, 0);
-      wp.push(0);
-    }
-    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-    g.setAttribute('aW', new THREE.Float32BufferAttribute(w4, 4));
-    g.setAttribute('aPath', new THREE.Float32BufferAttribute(wp, 1));
-    g.setAttribute('aCliff', new THREE.Float32BufferAttribute(Array.from({ length: pos.count }, (_, i) => cliffWeight(hAt, pos.getX(i), pos.getZ(i))), 1));
-    g.computeVertexNormals();
-    const hill = new THREE.Mesh(g, terrainMat.material);
-    hill.receiveShadow = true;
-    preview.add(hill);
-    const cr = cliffRocks(-8, -8, 8, 8, hAt);
-    if (cr.rocks) {
-      const m = new THREE.Mesh(cr.rocks, cliffMat.material);
-      m.castShadow = m.receiveShadow = true;
-      preview.add(m);
-    }
-    for (let k = 0; k < DECOR.placement.rockVariants; k++) instanced(rockGeometry(SEED, k), stoneMat.material, cr.rubble.filter((s) => s.v === k));
-  },
+  Cliffs: () => { templates.preview(TEMPLATE_TABS.Cliffs); camera.position.set(0, 30, 30); controls.target.set(0, 0, 0); },
   Quarries() {
     // columns: mud, stone, iron ore, copper ore – rows: the variants
     preview.add(ground(24, '#7aa34a', 32, () => [0.6, 0, 0, 0.4, 0]));
@@ -662,21 +395,62 @@ const builders: Record<string, () => void> = {
 };
 
 function rebuild(): void {
-  (editorWater?.mesh as { dispose?: () => void } | undefined)?.dispose?.(); // reflector render target
-  editorWater = undefined;
-  setWater(DECOR.water); // water knobs / shapes -> engine
+  templates.dispose(); // reflector render target of the template preview
   preview.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
   preview.clear();
   grassUniforms = undefined;
   shellUniforms = undefined;
+  // camera: builders may set a default view – it only applies to a tab never viewed before;
+  // otherwise the view stays (rebuilds) or comes back as it was left (tab switch, reload)
+  const keepP = camera.position.clone(), keepT = controls.target.clone();
   builders[tab]();
+  const saved = views[tab];
+  if (viewTab !== tab) {
+    if (saved) { camera.position.fromArray(saved.p); controls.target.fromArray(saved.t); }
+    viewTab = tab;
+  } else {
+    camera.position.copy(keepP);
+    controls.target.copy(keepT);
+  }
+  controls.update();
 }
 
 // ---- UI ----
 const tabsEl = document.getElementById('tabs')!;
 const knobsEl = document.getElementById('knobs')!;
 const statusEl = document.getElementById('status')!;
-let tab = 'Trees';
+// last tab and the camera view per tab survive reloads
+const TAB_KEY = 'qre.editor.tab', VIEWS_KEY = 'qre.editor.views';
+const readJson = <T>(key: string, fallback: T): T => { try { return JSON.parse(localStorage.getItem(key) ?? 'null') ?? fallback; } catch { return fallback; } };
+const views: Record<string, { p: number[]; t: number[] }> = readJson(VIEWS_KEY, {});
+let viewTab = '';
+let tab: string = readJson<string>(TAB_KEY, 'Trees');
+let viewTimer: ReturnType<typeof setTimeout> | undefined;
+controls.addEventListener('change', () => { // also while damping settles after you let go
+  views[tab] = { p: camera.position.toArray(), t: controls.target.toArray() };
+  clearTimeout(viewTimer);
+  viewTimer = setTimeout(() => { try { localStorage.setItem(VIEWS_KEY, JSON.stringify(views)); } catch { /* ignore */ } }, 300);
+});
+const selectTab = (name: string) => {
+  tab = name;
+  try { localStorage.setItem(TAB_KEY, JSON.stringify(name)); } catch { /* ignore */ }
+};
+
+// Terrain templates (= location traits): tabs Water, High spot, Forest, Traits. Loaded from the server.
+const TEMPLATE_TABS: Record<string, TemplateKind[]> = {
+  Water: ['lake', 'pond', 'river'], 'High spot': ['highspot'], Forest: ['forest'], Cliffs: ['cliff'],
+  Traits: ['rocky', 'quarry', 'climate', 'valley', 'fields', 'perimeter'],
+};
+try {
+  setTemplates(await (await fetch('/api/templates')).json() as TerrainTemplate[]);
+} catch {
+  // server not reachable: built-in defaults
+}
+const templates = createTemplateEditor({
+  preview, camera, controls, canvas, sun, terrainMaterial: terrainMat.material, knobsEl,
+  rebuild: () => rebuild(), renderPanel: () => renderPanel(), activeKinds: () => TEMPLATE_TABS[tab] ?? null,
+  status: (text) => { statusEl.textContent = text; },
+});
 
 const get = (path: string): any => path.split('.').reduce((o: any, k) => o[k], DECOR);
 const set = (path: string, value: unknown) => {
@@ -861,13 +635,13 @@ function renderPanel(): void {
   tabsEl.innerHTML = '';
   for (const name of Object.keys(TABS)) {
     const b = Object.assign(document.createElement('button'), { className: `tab${name === tab ? ' active' : ''}`, textContent: name });
-    b.onclick = () => { tab = name; renderPanel(); rebuild(); };
+    b.onclick = () => { selectTab(name); renderPanel(); rebuild(); };
     tabsEl.append(b);
   }
   knobsEl.innerHTML = '';
   if (tab === 'Custom model') scatterPanel();
   else {
-    if (tab === 'Water') waterShapePanel();
+    if (TEMPLATE_TABS[tab]) templates.panel(TEMPLATE_TABS[tab]); // named terrain templates (= traits)
     knobsPanel();
   }
   status();
@@ -886,6 +660,7 @@ document.getElementById('copy')!.onclick = async () => {
   await navigator.clipboard.writeText(JSON.stringify(DECOR, null, 2));
   statusEl.textContent = 'copied DECOR as JSON – paste into location-decor.ts to make it the default';
 };
+if (!TABS[tab]) selectTab('Trees'); // a stored tab that no longer exists
 renderPanel();
 rebuild();
 renderer.setAnimationLoop(() => {
@@ -903,7 +678,7 @@ renderer.setAnimationLoop(() => {
   cliffMat.sync();
   mossMat.sync();
   updateTreeWind(performance.now() / 1000);
-  editorWater?.update(performance.now() / 1000);
+  templates.update(performance.now() / 1000);
   if (shellUniforms) { shellUniforms.uTime.value = performance.now() / 1000; shellUniforms.uSway.value = DECOR.grassSway; }
   if (grassUniforms) {
     grassUniforms.uTime.value = performance.now() / 1000;

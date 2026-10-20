@@ -5,12 +5,12 @@
 //   /src/client/*.ts  -> client modules (same treatment)
 //   /api/*            -> JSON view models from GameService
 //   POST /api/command -> DEV ONLY: run any engine command for any player (no auth, no QR/GPS check)
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer, type ServerResponse } from 'node:http';
 import { stripTypeScriptTypes } from 'node:module';
 import { networkInterfaces } from 'node:os';
 import path from 'node:path';
-import type { Bounds, Command, EngineContext } from '../engine/index.ts';
+import { getTemplates, setTemplates, withMissingKinds, type Bounds, type Command, type EngineContext, type TerrainTemplate } from '../engine/index.ts';
 import { MemoryRepository } from '../storage/memory.ts';
 import { GameService } from './game-service.ts';
 import { DEMO_CENTER, makeLocations, seedDemo } from './world.ts';
@@ -24,7 +24,16 @@ const ASSET_TYPES: Record<string, string> = {
   '.stl': 'model/stl', '.png': 'image/png', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.json': 'application/json',
 };
 
+// Terrain templates (= location traits): data/templates.json, edited in the asset editor.
+const TEMPLATES_FILE = path.join(ROOT, 'data/templates.json');
+try {
+  setTemplates(withMissingKinds(JSON.parse(await readFile(TEMPLATES_FILE, 'utf8')) as TerrainTemplate[]));
+} catch {
+  // no file yet: the built-in defaults
+}
 const locations = makeLocations(WORLD_SEED, DEMO_CENTER, 60);
+/** Re-roll the locations' traits from the current templates (keeps ids, names, positions). */
+const rerollLocations = () => { for (const [id, loc] of makeLocations(WORLD_SEED, DEMO_CENTER, 60)) Object.assign(locations.get(id) ?? {}, { traits: loc.traits }); };
 const context = (): EngineContext => ({ worldSeed: WORLD_SEED, now: Date.now(), locations });
 const repo = new MemoryRepository(); // state resets on restart; swap for a real adapter later
 const game = new GameService(repo, context, process.env.QR_SECRET ?? 'dev-secret');
@@ -85,6 +94,16 @@ const server = createServer(async (req, res) => {
       return json(res, { worldSeed: WORLD_SEED, center: DEMO_CENTER, now: Date.now() });
     }
 
+    if (p === '/api/templates' && req.method === 'GET') return json(res, getTemplates());
+    if (p === '/api/templates' && req.method === 'PUT') { // asset editor saves the templates
+      const list = await readJson(req, 2_000_000);
+      if (!Array.isArray(list) || !list.every((t) => t && typeof t.name === 'string' && ID.test(t.name) && typeof t.kind === 'string')) return json(res, { error: 'bad templates' }, 400);
+      setTemplates(list as TerrainTemplate[]);
+      rerollLocations();
+      await mkdir(path.dirname(TEMPLATES_FILE), { recursive: true });
+      await writeFile(TEMPLATES_FILE, JSON.stringify(list, null, 1));
+      return json(res, { ok: true, count: list.length });
+    }
     if (p === '/api/locations') { // dev: quick switching on the location page
       return json(res, [...locations.values()].map(({ id, name, type, tier, traits }) => ({ id, name, type, tier, traits })));
     }

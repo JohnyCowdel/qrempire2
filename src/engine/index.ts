@@ -12,6 +12,7 @@ export * from './character.ts';
 export * from './geo.ts';
 export * from './scene.ts';
 export * from './water.ts';
+export * from './templates.ts';
 export * from './map.ts';
 export * from './commands.ts';
 

@@ -26,32 +26,10 @@ export const LOCATION_TYPES: Record<LocationType, LocationTypeDef> = {
 };
 
 /**
- * Terrain characteristics of a location. Combined with the location's seed they shape its
- * terrain (see terrainField in scene.ts). Traits sharing a `group` exclude each other.
+ * Terrain characteristics of a location = names of terrain templates (templates.ts). The
+ * templates (and so the possible traits) are edited in the asset editor and stored by the server.
  */
-export const LOCATION_TRAITS = {
-  'central-high-spot': { name: 'Central high spot', group: undefined },
-  fields: { name: 'Fields', group: undefined },
-  dry: { name: 'Dry', group: 'climate' },
-  wet: { name: 'Wet', group: 'climate' },
-  bog: { name: 'Bog', group: undefined },
-  valley: { name: 'Valley', group: undefined },
-  'river-direct': { name: 'Straight river', group: 'river' },
-  'river-curvy': { name: 'Curvy river', group: 'river' },
-  'river-peninsula': { name: 'River peninsula', group: 'river' },
-  'lake-island': { name: 'Lake island', group: 'lake' },
-  'lake-peninsula': { name: 'Lake peninsula', group: 'lake' },
-  'lake-nearby': { name: 'Lake nearby', group: 'lake' },
-  'perimeter-wood': { name: 'Woods around', group: 'perimeter' },
-  'perimeter-meadows': { name: 'Meadows around', group: 'perimeter' },
-  'perimeter-fields': { name: 'Fields around', group: 'perimeter' },
-  'iron-ore': { name: 'Iron ore', group: 'deposit' },
-  'copper-ore': { name: 'Copper ore', group: 'deposit' },
-  'stone-quarry': { name: 'Stone quarry', group: 'deposit' },
-  'mud-quarry': { name: 'Mud quarry', group: 'deposit' },
-  'salt-quarry': { name: 'Salt quarry', group: 'deposit' },
-} as const satisfies Record<string, { name: string; group: string | undefined }>;
-export type LocationTrait = keyof typeof LOCATION_TRAITS;
+export type LocationTrait = string;
 
 export type BuildingKind ='hall' | 'lumberyard' | 'quarry' | 'mine' | 'warehouse';
 

@@ -2,7 +2,7 @@
 // Terrain, decorations and NPC movement are computed in the browser; the server only provides
 // game state (owner, buildings, stock) and executes commands.
 import {
-  baseIdFor, BUILDINGS, LOCATION_TRAITS, LOCATION_TYPES, RESOURCE_KINDS, settleBase,
+  baseIdFor, BUILDINGS, LOCATION_TYPES, RESOURCE_KINDS, setTemplates, settleBase, traitTitle, type TerrainTemplate,
   type BaseState, type BuildingKind, type Command, type LocationTrait, type Resources, type SceneStructure,
 } from '../engine/index.ts';
 import { LocationView, STRUCTURE_EMOJI } from './location-view.ts';
@@ -32,6 +32,7 @@ let playerId = (() => {
 })();
 
 const world = await getJson<{ worldSeed: number; now: number }>('/api/world');
+setTemplates(await getJson<TerrainTemplate[]>('/api/templates')); // the terrain templates the traits refer to
 // all locations, for quick switching (◀ ▶ buttons, the dropdown, or the [ and ] keys)
 const allLocations = (await getJson<{ id: string; name: string; type: string; tier: number; traits?: string[] }[]>('/api/locations').catch(() => []))
   .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
@@ -43,7 +44,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key === '[') goStep(-1);
   else if (e.key === ']') goStep(1);
 });
-const traitNames = (t?: string[]) => (t ?? []).map((k) => LOCATION_TRAITS[k as keyof typeof LOCATION_TRAITS]?.name ?? k).join(', ');
+const traitNames = (t?: string[]) => (t ?? []).map(traitTitle).join(', ');
 const locSwitcher = () => allLocations.length ? `
   <div class="switcher">
     <button id="loc-prev" class="btn" title="Previous location ( [ )">◀</button>
@@ -161,7 +162,7 @@ function render(): void {
     ${locSwitcher()}
     <h1>${type?.emoji ?? ''} ${esc(loc.name)} <span class="stars">${'★'.repeat(loc.tier)}</span></h1>
     <div class="muted">${type?.name ?? loc.type}${scene.chestAvailable ? ' · 🎁 a chest is waiting here' : ''}</div>
-    <div class="traits">${(loc.traits ?? []).map((t) => `<span class="trait">${esc(LOCATION_TRAITS[t]?.name ?? t)}</span>`).join('')}</div>
+    <div class="traits">${(loc.traits ?? []).map((t) => `<span class="trait">${esc(traitTitle(t))}</span>`).join('')}</div>
     <div class="row">${owner}</div>
     <label class="row muted">Playing as <input id="player" value="${esc(playerId)}" maxlength="40"></label>
     <label class="row muted">Graphics <select id="quality">${qualityOptions()}</select></label>

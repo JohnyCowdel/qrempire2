@@ -18,7 +18,9 @@ export interface LocationDef extends LatLng {
   name: string;
   type: LocationType;
   tier: 1 | 2 | 3;
-  traits: LocationTrait[]; // terrain characteristics (see LOCATION_TRAITS)
+  traits: LocationTrait[]; // terrain characteristics = template names (see templates.ts)
+  preview?: boolean; // asset editor preview: templates centred and unrotated
+  extraTemplates?: import('./templates.ts').TerrainTemplate[]; // asset editor preview: unlisted helper templates (e.g. a steep test hill)
 }
 
 /** A 3D asset (e.g. STL) placed on the world map. Static content, like LocationDef. */

@@ -9,9 +9,7 @@
 import * as THREE from 'three';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
-import { hash32, rngFor, setWater, WATER, type Rng } from '../engine/index.ts';
-
-const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
+import { hash32, KIND_DEFAULTS, rngFor, type Rng, type WaterLooks } from '../engine/index.ts';
 import { valueNoise } from '../engine/noise.ts';
 
 // ======================= KNOBS =======================
@@ -216,23 +214,6 @@ export const DECOR = {
       color: '#7a7a72', oreColor: '#3f8a70', veinColor: '#4a9a82', veinAmount: 0.35, veinScale: 7, // verdigris green stripes
     },
   },
-  /** Cliffs: steep ground painted in the cliff colour, big low-poly stones from foot to top, rubble below. */
-  cliffs: {
-    p1: 0.6, // tiles: how far apart the slope is sampled (bigger = smoother cliff outline)
-    minSlope: 0.8, // height change per tile where the cliff colour starts…
-    fullSlope: 1.4, // …and fully covers the slope
-    color: '#868c93',
-    gridSize: 1, // tiles: width of one cliff rock along the slope (the walk step around it)
-    protrude: 0.08, // shifts the rock face out of (+) or into (−) the slope (tiles)
-    bulge: 0.2, // how far the lower rock face bulges out (× the slope height)
-    depth: 0.5, // how far the rock reaches back into the hill
-    gridJitter: 0.5, // how much the rock widths differ (0 = all exactly one grid size wide)
-    reachJitter: 0.2, // how much the rocks differ in how far up they reach (some cover the rim, some stop short)
-    chamfer: 0.12, // tiles: bevel on every edge and corner of a rock (softens the blocky look; 0 = sharp)
-    sink: 0.25, // how far below the foot the rock reaches
-    rubblePerRock: 2, // small stones at each rock's foot (bare stone variants)
-    rubbleSize: [0.06, 0.2],
-  },
 
   /**
    * Terrain textures (per pixel, procedural). Each surface has its own colours and pattern;
@@ -321,26 +302,6 @@ export const DECOR = {
     path: { width: 0.55, edge: 0.45, dark: '#8b7856', light: '#ad9a72', bump: 0.5, tint: 0.2 },
   },
 
-  /**
-   * Water environments. Shape side (sent to the engine: depth, bank slope, templates, sizes) –
-   * the outlines / centre lines are edited in the asset editor's Water tab – and look side:
-   * surface colour, transparency, reflection, ripples, and the textures of the shore and the bed
-   * (grass | field | sand | rock | path). shoreWidth: height band above the water line.
-   */
-  water: {
-    lake: {
-      ...clone(WATER.lake), color: '#2f5f8f', opacity: 0.88, reflectivity: 0.8, waveScale: 1.4, waveSpeed: 0.5, waveStrength: 0.03,
-      shoreTexture: 'sand', shoreWidth: 0.03, bedTexture: 'sand',
-    },
-    pond: {
-      ...clone(WATER.pond), color: '#3e5b3c', opacity: 0.93, reflectivity: 0.55, waveScale: 2.4, waveSpeed: 0.2, waveStrength: 0.012,
-      shoreTexture: 'path', shoreWidth: 0.02, bedTexture: 'path',
-    },
-    river: {
-      ...clone(WATER.river), color: '#36708c', opacity: 0.85, reflectivity: 0.7, waveScale: 1.8, waveSpeed: 1.4, waveStrength: 0.04,
-      shoreTexture: 'rock', shoreWidth: 0.025, bedTexture: 'sand',
-    },
-  },
 };
 // =====================================================
 
@@ -1382,7 +1343,7 @@ function syncSurface(u: SurfaceUniforms, ore?: OreKind): void {
   num('rScale', T.rock.scale); num('rCrackW', T.rock.crackWidth); num('rLichenAmt', T.rock.lichenAmount); num('rBump', T.rock.bump); num('rTint', T.rock.tint);
   col('pA', T.path.dark); col('pB', T.path.light); col('pPebble', T.path.pebbleColor);
   num('pScale', T.path.pebbleScale); num('pPebbleAmt', T.path.pebbleAmount); num('pBump', T.path.bump); num('pTint', T.path.tint);
-  (u.uCliffColor.value as THREE.Color).set(DECOR.cliffs.color);
+  (u.uCliffColor.value as THREE.Color).set(CLIFF.color);
   const RS = DECOR.roads.stone, RP = DECOR.roads.path;
   col('cStone', RS.stone); col('cGrout', RS.grout); num('cScale', RS.cobbleSize); num('cBump', RS.bump); num('cTint', RS.tint);
   col('fpA', RP.dark); col('fpB', RP.light); num('fpBump', RP.bump); num('fpTint', RP.tint);
@@ -1625,9 +1586,16 @@ export function mudMaterial(): THREE.MeshLambertMaterial {
   return (mudMat ??= new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }));
 }
 
-/** How much of a cliff the ground at (x, z) is: 0 = gentle, 1 = steep (DECOR.cliffs min/fullSlope). */
+/**
+ * Cliff settings in effect: the cliff template of the location being built (setCliff, from
+ * cliffOf(traits)). Defaults: the cliff kind defaults.
+ */
+export const CLIFF: Record<string, any> = { ...KIND_DEFAULTS.cliff };
+export function setCliff(params: Record<string, any>): void { Object.assign(CLIFF, params); }
+
+/** How much of a cliff the ground at (x, z) is: 0 = gentle, 1 = steep (CLIFF min/fullSlope). */
 export function cliffWeight(heightAt: (x: number, z: number) => number, x: number, z: number): number {
-  const C = DECOR.cliffs, d = Math.max(0.05, C.p1);
+  const C = CLIFF, d = Math.max(0.05, C.p1);
   const gx = (heightAt(x + d, z) - heightAt(x - d, z)) / (2 * d), gz = (heightAt(x, z + d) - heightAt(x, z - d)) / (2 * d);
   return THREE.MathUtils.smoothstep(Math.hypot(gx, gz), C.minSlope, C.fullSlope);
 }
@@ -1658,7 +1626,7 @@ function chamferedHull(pts: THREE.Vector3[], chamfer: number): THREE.BufferGeome
 
 export interface CliffStone { x: number; z: number; y: number; s: number; sy: number; rot: number; v: number }
 /**
- * Cliff rocks built from the slope itself. The map is walked on a grid (DECOR.cliffs.gridSize);
+ * Cliff rocks built from the slope itself. The map is walked on a grid (CLIFF.gridSize);
  * at every steep grid point the slope is crossed at two points a grid step apart (along the
  * slope): walking uphill finds two guide points on its top edge, walking downhill two on its foot.
  * A closed low-poly rock (convex hull) is wrapped around those guides: front face from the top
@@ -1670,7 +1638,7 @@ export function cliffRocks(
   x0: number, z0: number, x1: number, z1: number, heightAt: (x: number, z: number) => number,
   inside: (x: number, z: number) => boolean = () => true, seed = ASSET_SEED,
 ): { rocks: THREE.BufferGeometry | undefined; rubble: CliffStone[] } {
-  const C = DECOR.cliffs, g = Math.max(0.3, C.gridSize), nRock = Math.max(1, DECOR.placement.rockVariants);
+  const C = CLIFF, g = Math.max(0.3, C.gridSize), nRock = Math.max(1, DECOR.placement.rockVariants);
   const parts: THREE.BufferGeometry[] = [], rubble: CliffStone[] = [];
   const done: { tx: number; tz: number; bx: number; bz: number }[] = [];
   const stone = new THREE.Color(C.color), c = new THREE.Color();
@@ -1715,8 +1683,15 @@ export function cliffRocks(
           const px = b.x + (t0.x - b.x) * f * Math.min(1, reach), pz = b.z + (t0.z - b.z) * f * Math.min(1, reach);
           P(px + ox, heightAt(px, pz) + 0.02, pz + oz);
         }
-        const f = 0.3 + r.next() * 0.25, m = t.clone().lerp(b, 1 - f); // bulge of the lower face
-        P(m.x - ux * C.bulge * H + ox, m.y, m.z - uz * C.bulge * H + oz);
+        // bulges of the face: middle (random height), and optional extra points near the top and the foot
+        const bulgeAt = (fromTop: number, amount: number) => {
+          if (!amount) return;
+          const m = t.clone().lerp(b, fromTop);
+          P(m.x - ux * amount * H + ox, m.y, m.z - uz * amount * H + oz);
+        };
+        bulgeAt(1 - (0.3 + r.next() * 0.25), C.bulge);
+        bulgeAt(C.topBulgeAt ?? 0.15, C.topBulge ?? 0);
+        bulgeAt(C.bottomBulgeAt ?? 0.85, C.bottomBulge ?? 0);
       }
       let geo: THREE.BufferGeometry = chamferedHull(pts, C.chamfer);
       geo.deleteAttribute('uv');
@@ -1974,7 +1949,6 @@ try {
 } catch {
   // no saved settings / storage unavailable
 }
-setWater(DECOR.water); // water shapes / depths / banks from the editor -> engine terrain
 
 // ---- roads ----
 
@@ -2133,12 +2107,12 @@ const towardsW = (w: number[], k: number, a: number) => { for (let q = 0; q < w.
  * takes the environment's shore texture, everything below it the bed texture (texture weights `w`
  * = [grass, field, sand, rock, path], colour `c` towards `colors[texture]`). No water nearby -> lake.
  */
-export function applyShore(env: WaterEnv, h: number, waterLevel: number, c: THREE.Color, w: number[], colors: Record<string, string>): void {
+export function applyShore(env: WaterEnv, h: number, waterLevel: number, c: THREE.Color, w: number[], colors: Record<string, string>, looks: WaterLooks): void {
   const sum = env.lake + env.pond + env.river;
   for (const k of ['lake', 'pond', 'river'] as const) {
     const share = sum > 0.01 ? env[k] / sum : k === 'lake' ? 1 : 0;
     if (share <= 0) continue;
-    const cfg = DECOR.water[k];
+    const cfg = looks[k];
     const shore = (1 - THREE.MathUtils.smoothstep(h, waterLevel, waterLevel + cfg.shoreWidth)) * share;
     const bed = (1 - THREE.MathUtils.smoothstep(h, waterLevel - 0.006, waterLevel + 0.004)) * share;
     const si = SURFACES.indexOf(cfg.shoreTexture as (typeof SURFACES)[number]), bi = SURFACES.indexOf(cfg.bedTexture as (typeof SURFACES)[number]);
