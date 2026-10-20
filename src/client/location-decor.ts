@@ -36,7 +36,7 @@ export const DECOR = {
     teeth: 22, // jagged teeth around a needle skirt's rim (texture)
     toothDepth: 0.35, // how deep the teeth cut into the skirt (0..0.8)
     rimWobble: 0.18, // irregularity of the rim radius
-    segments: 14, // around the trunk (smoothness)
+    segments: 10, // around the trunk (smoothness; triangles per skirt = segments × 4)
     alphaTest: 0.4,
   },
 
@@ -548,7 +548,7 @@ function cardMaterial(kind: 'leaf' | 'needle'): THREE.MeshLambertMaterial {
 function skirtGeometry(cx: number, cz: number, yTop: number, yBottom: number, rTop: number, rBottom: number,
   curve: number, color: THREE.Color, seed: number, uRepeat: number, tilt?: THREE.Quaternion): THREE.BufferGeometry {
   const S = DECOR.skirts;
-  const seg = Math.max(6, Math.round(S.segments)), rings = 3;
+  const seg = Math.max(6, Math.round(S.segments)), rings = 2; // 2 rings: enough droop at RTS distance, a third fewer triangles
   const wob = (a: number) => 1 + (valueNoise(seed, Math.cos(a) * 1.7 + 5, Math.sin(a) * 1.7 + 5) - 0.5) * 2 * S.rimWobble;
   const pos: number[] = [], nrm: number[] = [], col: number[] = [], uv: number[] = [], idx: number[] = [];
   for (let j = 0; j <= rings; j++) {
@@ -691,7 +691,19 @@ function addTreeWind(material: THREE.Material, foliage: boolean): void {
         transformed.x += bend;
         transformed.z += bend * 0.5;
         ${foliage ? `float rim = length(position.xz);
-        transformed.y += sin(uTime * 5.0 + position.x * 9.0 + position.z * 7.0 + ph) * uFlutter * rim;` : ''}`);
+        transformed.y += sin(uTime * 5.0 + position.x * 9.0 + position.z * 7.0 + ph) * uFlutter * rim;` : 'vBark = vec3(atan(position.z, position.x), position.y, aSeed); vMark = aMark;'}`);
+    if (!foliage) { // bark: short horizontal dashes of the mark colour (birch) – per pixel, so the trunk can stay low poly
+      shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\nattribute vec4 aMark;\nattribute float aSeed;\nvarying vec3 vBark;\nvarying vec4 vMark;');
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>
+          varying vec3 vBark; varying vec4 vMark;
+          float bHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+          float bNoise(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+            return mix(mix(bHash(i), bHash(i + vec2(1, 0)), f.x), mix(bHash(i + vec2(0, 1)), bHash(i + vec2(1, 1)), f.x), f.y); }`)
+        .replace('#include <color_fragment>', `#include <color_fragment>
+          float bn = bNoise(vec2(vBark.x * 2.2 + vBark.z, vBark.y * 11.0 + vBark.z * 3.0));
+          diffuseColor.rgb = mix(diffuseColor.rgb, vMark.rgb, smoothstep(1.0 - vMark.a, 1.0 - vMark.a + 0.08, bn) * 0.85);`);
+    }
   };
   material.customProgramCacheKey = () => `tree-wind-${foliage}`;
 }
@@ -796,18 +808,13 @@ export function speciesTint(name: SpeciesName, r: Rng, pick?: number): THREE.Col
 
 /** Tapered trunk with bark colour + patches of barkMarks (vertex colours). */
 function trunkGeometry(sp: TreeSpecies, height: number, seed: number): THREE.BufferGeometry {
-  const g = new THREE.CylinderGeometry(sp.trunkWidth * 0.25, sp.trunkWidth, height, 8, 12, true);
+  // low poly (6 sides, 2 rows = 24 triangles); the bark marks are drawn per pixel by the bark material
+  const g = new THREE.CylinderGeometry(sp.trunkWidth * 0.25, sp.trunkWidth, height, 6, 2, true);
   g.translate(0, height / 2 - 0.05, 0);
-  const pos = g.attributes.position, base = new THREE.Color(sp.barkColor), mark = new THREE.Color(sp.barkMarks), c = new THREE.Color();
-  const col: number[] = [];
-  for (let i = 0; i < pos.count; i++) {
-    const y = pos.getY(i), a = Math.atan2(pos.getZ(i), pos.getX(i));
-    const n = valueNoise(seed, Math.cos(a) * 1.4 + y * 3, Math.sin(a) * 1.4 + y * 11); // short horizontal dashes
-    const m = THREE.MathUtils.smoothstep(n, 1 - sp.barkMarkAmount, 1 - sp.barkMarkAmount + 0.08);
-    c.copy(base).lerp(mark, m * 0.85);
-    col.push(c.r, c.g, c.b);
-  }
-  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  const n = g.attributes.position.count, base = new THREE.Color(sp.barkColor), mark = new THREE.Color(sp.barkMarks);
+  g.setAttribute('color', new THREE.Float32BufferAttribute(new Array(n).fill(0).flatMap(() => [base.r, base.g, base.b]), 3));
+  g.setAttribute('aMark', new THREE.Float32BufferAttribute(new Array(n).fill(0).flatMap(() => [mark.r, mark.g, mark.b, sp.barkMarkAmount]), 4));
+  g.setAttribute('aSeed', new THREE.Float32BufferAttribute(new Array(n).fill((seed % 997) / 97), 1));
   return g;
 }
 

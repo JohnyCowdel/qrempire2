@@ -10,7 +10,7 @@ import type { WaterLooks } from '../engine/index.ts';
 // Colour, transparency, reflection and ripples come from the location's lake / pond / river
 // templates (asset editor → Water). These are shared:
 export const WATER_SURFACE = {
-  reflection: true, // false = cheap non-reflective water (no second scene render)
+  reflection: false, // off: waves, fresnel colour and sun glints only (true = real-time mirror image – renders the scene a second time)
   resolution: 0.5, // reflection texture size relative to the screen
   sparkle: 1.2, // sun glints on the ripples
   sunColor: '#ffcf9a',
@@ -133,6 +133,10 @@ export function createWater(size: number, cx: number, cz: number, sunDirection: 
       textureHeight: Math.round(window.innerHeight * dpr * S.resolution),
       shader,
     });
+    // the reflection camera is a clone of the view camera: keep layer 1 (grass, stones, trunks, crops) out of it
+    const r = mesh as unknown as { getReflectionCamera: (c: THREE.Camera) => THREE.Camera };
+    const getCam = r.getReflectionCamera.bind(r);
+    r.getReflectionCamera = (c) => { const rc = getCam(c); rc.layers.disable(1); return rc; };
   } else {
     mesh = new THREE.Mesh(geometry, new THREE.ShaderMaterial({ uniforms, vertexShader, fragmentShader }));
   }

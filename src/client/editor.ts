@@ -7,7 +7,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { rngFor, setTemplates, type TemplateKind, type TerrainTemplate } from '../engine/index.ts';
 import { createTemplateEditor } from './template-editor.ts';
 import {
-  ASSET_SEED, roadField, mudMaterial, applyShore, SURFACES, waterMaskTexture, tuftVariants, barkMaterial, cliffRocks, cliffWeight, quarryGeometry, fieldPlotAt, rockMaterial, terrainMaterial, shellGrass, updateTreeWind, broadleafTree, coniferTree, cropGeometries, speciesFoliageMaterial, speciesTint, speciesTree, type SpeciesName, foliageMaterial, cropItemsForTile, DECOR, DECOR_STORAGE_KEY, decorDefaults, DEFAULT_SCATTER, fieldGroundColor,
+  ASSET_SEED, applyDecor, roadField, mudMaterial, applyShore, SURFACES, waterMaskTexture, tuftVariants, barkMaterial, cliffRocks, cliffWeight, quarryGeometry, fieldPlotAt, rockMaterial, terrainMaterial, shellGrass, updateTreeWind, broadleafTree, coniferTree, cropGeometries, speciesFoliageMaterial, speciesTint, speciesTree, type SpeciesName, foliageMaterial, cropItemsForTile, DECOR, DECOR_STORAGE_KEY, decorDefaults, DEFAULT_SCATTER, fieldGroundColor,
   groundMaterial, patchAmount, tuftGroundTint, type CropItem,
   grassMaterial, grassTuftGeometry, inPatch, loadScatterParts, rockGeometry, type ScatterDef,
 } from './location-decor.ts';
@@ -441,6 +441,14 @@ const TEMPLATE_TABS: Record<string, TemplateKind[]> = {
   Water: ['lake', 'pond', 'river'], 'High spot': ['highspot'], Forest: ['forest'], Cliffs: ['cliff'],
   Traits: ['rocky', 'quarry', 'climate', 'valley', 'fields', 'perimeter'],
 };
+// asset settings: the server's copy wins (edited on another device?); none there yet -> upload this browser's
+try {
+  const serverDecor = await (await fetch('/api/decor')).json();
+  if (serverDecor) applyDecor(serverDecor);
+  else await fetch('/api/decor', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(DECOR) });
+} catch {
+  // server not reachable: this browser's copy
+}
 try {
   setTemplates(await (await fetch('/api/templates')).json() as TerrainTemplate[]);
 } catch {
@@ -459,12 +467,16 @@ const set = (path: string, value: unknown) => {
   keys.reduce((o: any, k) => o[k], DECOR)[last] = value;
 };
 
+let decorTimer: ReturnType<typeof setTimeout> | undefined;
 function save(): void {
   try {
     localStorage.setItem(DECOR_STORAGE_KEY, JSON.stringify(DECOR));
   } catch {
     // ignore
   }
+  // and on the server (data/decor.json): locations on every device use these
+  clearTimeout(decorTimer);
+  decorTimer = setTimeout(() => fetch('/api/decor', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(DECOR) }).catch(() => {}), 500);
   status();
 }
 

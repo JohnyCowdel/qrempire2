@@ -106,7 +106,10 @@
     0.3
    ],
    "bog": 0.48,
-   "shoreWidth": 0.08
+   "shoreWidth": 0.08,
+   "reflectivity": 1,
+   "waveScale": 0.54,
+   "waveStrength": 0.2
   },
   "points": [
    [

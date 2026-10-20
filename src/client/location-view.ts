@@ -246,7 +246,9 @@ export class LocationView {
   /** Graphics quality in effect (low / medium / high). */
   readonly quality: Quality;
   /** Called about once a second with the measured frame rate. */
-  onFps?: (fps: number) => void;
+  onFps?: (fps: number, stats: { calls: number; triangles: number }) => void;
+  /** Per-frame totals of the last frame (all passes: shadows, water reflection, main). */
+  readonly frameStats = { calls: 0, triangles: 0 };
   private fpsFrames = 0;
   private fpsSince = performance.now();
   private grassUniforms?: { uTime: { value: number }; uSway: { value: number } };
@@ -284,6 +286,7 @@ export class LocationView {
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = VIEW.exposure;
+    this.renderer.info.autoReset = false;
 
     // Evening sky: vertical gradient from dusky blue to an orange horizon, plus a light haze.
     const sky = document.createElement('canvas');
@@ -324,6 +327,7 @@ export class LocationView {
     this.ring.rotation.x = -Math.PI / 2;
 
     this.rts = new RtsCamera(canvas, new THREE.Vector3(W / 2, 0, H / 2), { cx: W / 2, cz: H / 2, radius: SCENE_RADIUS - 2 });
+    this.rts.camera.layers.enable(1); // layer 1 = small stuff: seen by the camera, skipped by the water reflection
     this.rts.onClick = (x, y) => (this.placing ? this.clickPlacement(x, y) : this.pick(x, y));
     canvas.addEventListener('pointermove', (e) => this.movePlacement(e.clientX, e.clientY));
     canvas.addEventListener('contextmenu', (e) => { if (this.placing) { e.preventDefault(); this.cancelPlacement(); this.placing = undefined; } });
@@ -691,6 +695,7 @@ export class LocationView {
     const shells = shellGrass(0, 0, W, H, (x, z) => this.heightAt(x, z), maskAt);
     if (!shells) return;
     this.shellUniforms = shells.uniforms;
+    shells.mesh.layers.set(1); // not in the water reflection
     this.root.add(shells.mesh);
   }
 
@@ -792,17 +797,29 @@ export class LocationView {
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), v = new THREE.Vector3(), sc = new THREE.Vector3();
     const UP = new THREE.Vector3(0, 1, 0);
     /** One InstancedMesh for all items of one geometry. */
-    const place = (geo: THREE.BufferGeometry, material: THREE.Material, items: Item[], shadows: boolean, sink = 0, lift = 0) => {
+    /**
+     * One InstancedMesh per geometry (per map quarter with `chunks`, so off-screen quarters get
+     * frustum-culled). `small`: left out of the water reflection (layer 1 – grass, stones, trunks…).
+     */
+    const place = (geo: THREE.BufferGeometry, material: THREE.Material, items: Item[], shadows: boolean, sink = 0, lift = 0, opts: { small?: boolean; chunks?: boolean } = {}) => {
       if (!items.length) return;
-      const im = new THREE.InstancedMesh(geo, material, items.length);
-      im.castShadow = shadows;
-      im.receiveShadow = true;
-      items.forEach((it, i) => {
-        m.compose(v.set(it.x, it.y ?? this.heightAt(it.x, it.z) - sink * it.s + lift, it.z), q.setFromAxisAngle(UP, it.rot), sc.set(it.s, it.sy ?? it.s, it.s));
-        im.setMatrixAt(i, m);
-        im.setColorAt(i, it.tint);
-      });
-      this.root.add(im);
+      const groups = opts.chunks
+        ? [0, 1, 2, 3].map((qd) => items.filter((it) => (it.x >= W / 2 ? 1 : 0) + (it.z >= H / 2 ? 2 : 0) === qd))
+        : [items];
+      for (const list of groups) {
+        if (!list.length) continue;
+        const im = new THREE.InstancedMesh(geo, material, list.length);
+        im.castShadow = shadows;
+        im.receiveShadow = true;
+        list.forEach((it, i) => {
+          m.compose(v.set(it.x, it.y ?? this.heightAt(it.x, it.z) - sink * it.s + lift, it.z), q.setFromAxisAngle(UP, it.rot), sc.set(it.s, it.sy ?? it.s, it.s));
+          im.setMatrixAt(i, m);
+          im.setColorAt(i, it.tint);
+        });
+        im.computeBoundingSphere(); // from the instances: lets the frustum culling skip off-screen chunks
+        if (opts.small) im.layers.set(1);
+        this.root.add(im);
+      }
     };
 
     const bark = lambert(DECOR.barkColor);
@@ -813,8 +830,9 @@ export class LocationView {
           const items = trees.filter((i) => i.sp === name && i.v === k);
           if (!items.length) continue;
           const t = speciesTree(name, ASSET_SEED, k); // shared asset pool
-          place(t.wood, barkMaterial(), items.map((i) => ({ ...i, tint: white })), VIEW.treeShadows);
-          place(t.foliage, speciesFoliageMaterial(name), items, VIEW.treeShadows);
+          // trunks: no shadow (the crown's is what you see), not reflected; everything culled per map quarter
+          place(t.wood, barkMaterial(), items.map((i) => ({ ...i, tint: white })), false, 0, 0, { small: true, chunks: true });
+          place(t.foliage, speciesFoliageMaterial(name), items, VIEW.treeShadows, 0, 0, { chunks: true });
         }
       }
     }
@@ -847,23 +865,23 @@ export class LocationView {
     const oreMat = ore ? rockMaterial(ore).material : stoneMat;
     for (let k = 0; k < D.rockVariants; k++) {
       const geo = rockGeometry(ASSET_SEED, k), mine = rocks.filter((i) => i.v === k && !i.mossy);
-      place(geo, stoneMat, mine.filter((i) => !onDeposit(i)), true, 0.15);
-      place(geo, oreMat, mine.filter(onDeposit), true, 0.15);
+      place(geo, stoneMat, mine.filter((i) => !onDeposit(i)), true, 0.15, 0, { small: true });
+      place(geo, oreMat, mine.filter(onDeposit), true, 0.15, 0, { small: true });
     }
     const mossMat = rockMaterial(undefined, true).material;
     for (let k = 0; k < D.mossyRockVariants; k++) {
-      place(rockGeometry(ASSET_SEED, k, undefined, true), mossMat, rocks.filter((i) => i.v === k && i.mossy), true, 0.15);
+      place(rockGeometry(ASSET_SEED, k, undefined, true), mossMat, rocks.filter((i) => i.v === k && i.mossy), true, 0.15, 0, { small: true });
     }
     const g = grassMaterial();
     this.grassUniforms = g.uniforms;
-    tuftVariants(ASSET_SEED, DECOR.tufts.meadow).forEach((geo, k) => place(geo, g.material, grass.filter((i) => i.v === k), false));
-    tuftVariants(ASSET_SEED, DECOR.tufts.reed).forEach((geo, k) => place(geo, g.material, reeds.filter((i) => i.v === k), false));
+    tuftVariants(ASSET_SEED, DECOR.tufts.meadow).forEach((geo, k) => place(geo, g.material, grass.filter((i) => i.v === k), false, 0, 0, { small: true }));
+    tuftVariants(ASSET_SEED, DECOR.tufts.reed).forEach((geo, k) => place(geo, g.material, reeds.filter((i) => i.v === k), false, 0, 0, { small: true }));
 
     // Crop fields: green unripe grain, yellow ripe grain (swaying tufts), brown clods on tilled plots.
     const cg = cropGeometries(ASSET_SEED);
     const asItems = (list: CropItem[]): Item[] => list.map((c) => ({ ...c, tint: white }));
-    cg.unripe.forEach((geo, k) => place(geo, g.material, asItems(crops[0].filter((c) => c.v === k)), false));
-    cg.ripe.forEach((geo, k) => place(geo, g.material, asItems(crops[1].filter((c) => c.v === k)), false));
+    cg.unripe.forEach((geo, k) => place(geo, g.material, asItems(crops[0].filter((c) => c.v === k)), false, 0, 0, { small: true, chunks: true }));
+    cg.ripe.forEach((geo, k) => place(geo, g.material, asItems(crops[1].filter((c) => c.v === k)), false, 0, 0, { small: true, chunks: true }));
 
     // Cliffs: blocky low-poly rocks lining each steep slope from its top edge to its foot, rubble below (DECOR.cliffs).
     const cr = cliffRocks(0, 0, W, H, (x, z) => this.heightAt(x, z),
@@ -874,7 +892,7 @@ export class LocationView {
       this.root.add(rockMesh);
     }
     for (let k = 0; k < D.rockVariants; k++) {
-      place(rockGeometry(ASSET_SEED, k), stoneMat, cr.rubble.filter((s) => s.v === k).map((s) => ({ ...s, tint: white })), true);
+      place(rockGeometry(ASSET_SEED, k), stoneMat, cr.rubble.filter((s) => s.v === k).map((s) => ({ ...s, tint: white })), true, 0, 0, { small: true });
     }
 
     // Custom models (DECOR.scatters): instanced in patches like grass, on their allowed tiles.
@@ -956,9 +974,12 @@ export class LocationView {
       l.position.z = this.terrain.height / 2 + Math.cos(time * 0.05 + i * 2.3) * 0.8;
     });
     this.renderer.render(this.scene, this.rts.camera);
+    this.frameStats.calls = this.renderer.info.render.calls;
+    this.frameStats.triangles = this.renderer.info.render.triangles;
+    this.renderer.info.reset(); // autoReset is off: count all passes of one frame
     this.fpsFrames++;
     if (nowPerf - this.fpsSince > 1000) {
-      this.onFps?.(Math.round((this.fpsFrames * 1000) / (nowPerf - this.fpsSince)));
+      this.onFps?.(Math.round((this.fpsFrames * 1000) / (nowPerf - this.fpsSince)), this.frameStats);
       this.fpsFrames = 0;
       this.fpsSince = nowPerf;
     }

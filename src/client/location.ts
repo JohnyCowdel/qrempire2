@@ -6,6 +6,7 @@ import {
   type BaseState, type BuildingKind, type Command, type LocationTrait, type Resources, type SceneStructure,
 } from '../engine/index.ts';
 import { LocationView, STRUCTURE_EMOJI } from './location-view.ts';
+import { applyDecor } from './location-decor.ts';
 import { autoQuality, QUALITIES, setQuality, storedQuality, type Quality } from './quality.ts';
 
 type BaseView = BaseState & { productionPerHour: Resources; storageCap: Resources; buildings: (BaseState['buildings'][number] & { name: string; remainingMs: number })[] };
@@ -33,6 +34,9 @@ let playerId = (() => {
 
 const world = await getJson<{ worldSeed: number; now: number }>('/api/world');
 setTemplates(await getJson<TerrainTemplate[]>('/api/templates')); // the terrain templates the traits refer to
+// asset editor settings from the server (they win over this browser's own copy, so a phone looks like the PC)
+const serverDecor = await getJson<unknown>('/api/decor').catch(() => null);
+if (serverDecor) applyDecor(serverDecor);
 // all locations, for quick switching (◀ ▶ buttons, the dropdown, or the [ and ] keys)
 const allLocations = (await getJson<{ id: string; name: string; type: string; tier: number; traits?: string[] }[]>('/api/locations').catch(() => []))
   .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
@@ -68,8 +72,10 @@ let message = '';
 const view = new LocationView(document.getElementById('viewport') as HTMLCanvasElement, world.worldSeed, scene.location as any, now);
 view.onSelect = (kind) => select(kind in BUILDINGS ? (kind as BuildingKind) : undefined);
 const fpsEl = document.getElementById('fps');
-view.onFps = (fps) => {
-  if (fpsEl) fpsEl.textContent = `${fps} fps · ${view.quality}`;
+(window as any).qreView = view; // dev: inspect from the console
+view.onFps = (fps, stats) => {
+  (window as any).qreStats = { fps, ...stats };
+  if (fpsEl) fpsEl.textContent = `${fps} fps · ${view.quality} · ${stats.calls} draw calls · ${(stats.triangles / 1e6).toFixed(2)}M tris`;
 };
 document.title = `${scene.location.name} – QR Empire`;
 

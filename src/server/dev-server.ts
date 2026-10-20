@@ -26,6 +26,7 @@ const ASSET_TYPES: Record<string, string> = {
 
 // Terrain templates (= location traits): data/templates.json, edited in the asset editor.
 const TEMPLATES_FILE = path.join(ROOT, 'data/templates.json');
+const DECOR_FILE = path.join(ROOT, 'data/decor.json'); // asset editor settings
 try {
   setTemplates(withMissingKinds(JSON.parse(await readFile(TEMPLATES_FILE, 'utf8')) as TerrainTemplate[]));
 } catch {
@@ -95,6 +96,17 @@ const server = createServer(async (req, res) => {
     }
 
     if (p === '/api/templates' && req.method === 'GET') return json(res, getTemplates());
+    // asset editor settings (DECOR): stored on the server so every device (phones!) renders the same
+    if (p === '/api/decor' && req.method === 'GET') {
+      try { return send(res, 200, await readFile(DECOR_FILE), 'application/json'); } catch { return json(res, null); }
+    }
+    if (p === '/api/decor' && req.method === 'PUT') {
+      const decor = await readJson(req, 2_000_000);
+      if (!decor || typeof decor !== 'object' || Array.isArray(decor)) return json(res, { error: 'bad settings' }, 400);
+      await mkdir(path.dirname(DECOR_FILE), { recursive: true });
+      await writeFile(DECOR_FILE, JSON.stringify(decor));
+      return json(res, { ok: true });
+    }
     if (p === '/api/templates' && req.method === 'PUT') { // asset editor saves the templates
       const list = await readJson(req, 2_000_000);
       if (!Array.isArray(list) || !list.every((t) => t && typeof t.name === 'string' && ID.test(t.name) && typeof t.kind === 'string')) return json(res, { error: 'bad templates' }, 400);
