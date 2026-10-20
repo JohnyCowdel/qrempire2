@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Asset editor – QR Empire</title>
+  <link rel="icon" href="data:," />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.186.1/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.186.1/examples/jsm/"
+      }
+    }
+  </script>
+  <style>
+    :root { --bg: #1c2027; --panel: #262b34; --line: #343b47; --text: #e9e6df; --muted: #9aa0aa; --gold: #ffd66b; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; font-size: 13px; }
+    #app { display: flex; height: 100%; }
+    #viewport { flex: 1; min-width: 0; height: 100%; display: block; }
+    #side { width: 360px; flex-shrink: 0; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--line); }
+    header { padding: 12px 14px 8px; border-bottom: 1px solid var(--line); }
+    header h1 { font-size: 16px; margin: 4px 0 8px; }
+    header a { color: var(--muted); text-decoration: none; }
+    #tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+    .tab { background: #1f242c; color: var(--muted); border: 1px solid var(--line); border-radius: 5px; padding: 4px 9px; cursor: pointer; }
+    .tab.active { color: var(--text); border-color: var(--gold); }
+    #knobs { flex: 1; overflow-y: auto; padding: 10px 14px; }
+    .knob { display: grid; grid-template-columns: 1fr 64px; gap: 2px 8px; align-items: center; margin: 6px 0; }
+    .knob > span { color: var(--muted); }
+    .knob input[type=range] { grid-column: 1 / -1; width: 100%; }
+    .knob input[type=number], .knob input[type=text] { width: 100%; box-sizing: border-box; background: #1c2027; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 2px 5px; }
+    .knob input[type=text] { grid-column: 1 / -1; }
+    .knob input[type=file] { grid-column: 1 / -1; color: var(--muted); }
+    .knob.check { grid-template-columns: 1fr auto; }
+    .colors { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+    .shape-head { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
+    .shape-head select, .knob select { background: #1c2027; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; }
+    .shape-editor { width: 100%; aspect-ratio: 1; background: #1c2027; border: 1px solid var(--line); border-radius: 6px; touch-action: none; user-select: none; }
+    input[type=color] { width: 34px; height: 22px; padding: 0; border: 1px solid var(--line); background: none; cursor: pointer; }
+    .hint { color: var(--muted); line-height: 1.4; }
+    code { background: #1c2027; padding: 0 4px; border-radius: 3px; }
+    h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 16px 0 6px; }
+    .scatter { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+    .scatter span { flex: 1; color: var(--muted); font-size: 12px; }
+    footer { border-top: 1px solid var(--line); padding: 10px 14px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .btn { background: #3b4352; color: var(--text); border: 1px solid #4a5465; border-radius: 5px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+    .btn:hover { background: #4a5465; }
+    #status { color: var(--muted); font-size: 12px; width: 100%; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <canvas id="viewport"></canvas>
+    <aside id="side">
+      <header>
+        <a href="/">← World map</a>
+        <h1>Asset editor</h1>
+        <div id="tabs"></div>
+      </header>
+      <div id="knobs"></div>
+      <footer>
+        <button id="reset" class="btn">Reset tab</button>
+        <button id="copy" class="btn">Copy settings (JSON)</button>
+        <div id="status"></div>
+      </footer>
+    </aside>
+  </div>
+  <script type="module" src="/src/client/editor.ts"></script>
+</body>
+</html>

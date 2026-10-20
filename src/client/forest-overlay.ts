@@ -15,6 +15,10 @@ export const FOREST = {
   patchMeters: 700, // size of same-shade patches
   colorRandomness: 0.2, // 0 = shade purely from patches, 1 = fully random per blob
   opacity: 1,
+  shadowOffset: [3, -3], // metres east / north from the tree to its shadow (default: sun from the north-west)
+  shadowScale: 1.05, // shadow size relative to the tree's outer crown
+  shadowColor: '#0f1f0a',
+  shadowOpacity: 0.35,
   showFromZoom: 15.5, // forest detail appears only when zoomed IN to at least this zoom (not computed when further out)
   fadeZooms: 1, // fade in over this many zoom levels above showFromZoom
   maxCandidates: 20_000, // work budget: if the view needs more grid checks than this, skip (zoom in / raise spacing)
@@ -24,7 +28,9 @@ export const FOREST = {
 // =====================================================
 
 export const FOREST_BLOB_LAYER = 'forest-blobs';
-export const FOREST_LAYERS = [FOREST_BLOB_LAYER];
+const FOREST_SHADOW_LAYER = 'forest-shadows';
+export const FOREST_LAYERS = [FOREST_SHADOW_LAYER, FOREST_BLOB_LAYER];
+const SHADOW = -1; // `k` of shadow features (tree tiers are 0, 1, 2)
 const SOURCE = 'forest-blobs';
 const M_PER_DEG = 111_320;
 
@@ -59,15 +65,20 @@ const TIER_COLORS = FOREST.colors.map((base) => TIER_SCALES.map((_, k) => mixHex
 /** Rotation variants per size (trees pick one instead of rotating at runtime). */
 const ROTATIONS = 12;
 
-/** SHAPES_M[size][rotation][tier] = ring of [dx, dy] metre offsets from the tree centre (closed). */
+/**
+ * SHAPES_M[size][rotation] = rings of [dx, dy] metre offsets from the tree centre (closed):
+ * index 0 is the shadow (outer crown, scaled + shifted), then one ring per crown tier.
+ */
 const SHAPES_M: number[][][][][] = FOREST.sizes.map((radius) =>
   Array.from({ length: ROTATIONS }, (_, r) => {
     const a = (r / ROTATIONS) * Math.PI * 2, cos = Math.cos(a) * radius, sin = Math.sin(a) * radius;
-    return TIER_SCALES.map((sc) => {
-      const ring = TEMPLATE.map(([ux, uy]) => [(ux * cos - uy * sin) * sc, (ux * sin + uy * cos) * sc]);
-      ring.push(ring[0]); // GeoJSON rings are closed
-      return ring;
-    });
+    const ring = (sc: number, ox = 0, oy = 0) => {
+      const out = TEMPLATE.map(([ux, uy]) => [ox + (ux * cos - uy * sin) * sc, oy + (ux * sin + uy * cos) * sc]);
+      out.push(out[0]); // GeoJSON rings are closed
+      return out;
+    };
+    const [sx, sy] = FOREST.shadowOffset;
+    return [ring(FOREST.shadowScale, sx, sy), ...TIER_SCALES.map((sc) => ring(sc))];
   }));
 
 type Ring = number[][]; // [x, y] in metres
@@ -95,8 +106,15 @@ export class ForestOverlay {
     // invisible at showFromZoom, full opacity fadeZooms later
     const fade = (alpha: number) => ['interpolate', ['linear'], ['zoom'],
       FOREST.showFromZoom, 0, FOREST.showFromZoom + Math.max(0.01, FOREST.fadeZooms), alpha];
+    // Shadows: their own layer under all trees, so a shadow never darkens a neighbouring crown.
+    map.addLayer({
+      id: FOREST_SHADOW_LAYER, type: 'fill', source: SOURCE, minzoom: FOREST.showFromZoom,
+      filter: ['==', ['get', 'k'], SHADOW],
+      paint: { 'fill-color': FOREST.shadowColor, 'fill-opacity': fade(FOREST.shadowOpacity), 'fill-antialias': false },
+    }, before);
     map.addLayer({
       id: FOREST_BLOB_LAYER, type: 'fill', source: SOURCE, minzoom: FOREST.showFromZoom,
+      filter: ['>=', ['get', 'k'], 0],
       layout: { 'fill-sort-key': ['get', 'k'] }, // all bottom tiers first, then middle, then top
       // antialias off: MapLibre's anti-aliased fill edge is an extra 1px outline that shows
       // as a visible line wherever semi-transparent shapes overlap.
@@ -170,14 +188,16 @@ export class ForestOverlay {
             // Per tree: pick a precomputed shape (size + rotation) and a colour, then just shift it.
             const h2 = hash32(this.seed, 'forest-r', gx, gy);
             const rnd = (h2 & 0xffff) / 0x10000; // colour randomness
-            const tiers = this.shapes[((h2 >>> 16) & 0xf) % FOREST.sizes.length][(h2 >>> 20) % ROTATIONS]; // separate hash bits
+            const shape = this.shapes[((h2 >>> 16) & 0xf) % FOREST.sizes.length][(h2 >>> 20) % ROTATIONS]; // separate hash bits
             const patch = valueNoise(this.seed, x / FOREST.patchMeters, y / FOREST.patchMeters);
             const t = Math.min(0.999, Math.max(0, patch * (1 - FOREST.colorRandomness) + rnd * FOREST.colorRandomness));
             const colors = TIER_COLORS[Math.floor(t * FOREST.colors.length)];
             const lng = x / this.mPerDegLng, lat = y / M_PER_DEG;
-            for (let k = 0; k < tiers.length; k++) {
-              const ring = tiers[k].map(([dLng, dLat]) => [lng + dLng, lat + dLat]);
-              features.push({ type: 'Feature', properties: { c: colors[k], k }, geometry: { type: 'Polygon', coordinates: [ring] } });
+            // shape[0] = shadow (k = -1), shape[1..] = crown tiers (k = 0, 1, 2)
+            for (let i = 0; i < shape.length; i++) {
+              const k = i === 0 ? SHADOW : i - 1;
+              const ring = shape[i].map(([dLng, dLat]) => [lng + dLng, lat + dLat]);
+              features.push({ type: 'Feature', properties: { c: k === SHADOW ? '' : colors[k], k }, geometry: { type: 'Polygon', coordinates: [ring] } });
             }
             if (++trees >= FOREST.maxBlobs) return source.setData({ type: 'FeatureCollection', features });
           }

@@ -1,13 +1,16 @@
 // Zero-dependency localhost server.
-//   /                 -> public/index.html
+//   /                 -> public/index.html (world map)
+//   /location/<id>    -> public/location.html (location page)
 //   /src/engine/*.ts  -> engine modules, types stripped on the fly, so the browser runs the SAME engine
 //   /src/client/*.ts  -> client modules (same treatment)
 //   /api/*            -> JSON view models from GameService
+//   POST /api/command -> DEV ONLY: run any engine command for any player (no auth, no QR/GPS check)
 import { readFile } from 'node:fs/promises';
 import { createServer, type ServerResponse } from 'node:http';
 import { stripTypeScriptTypes } from 'node:module';
+import { networkInterfaces } from 'node:os';
 import path from 'node:path';
-import type { Bounds, EngineContext } from '../engine/index.ts';
+import type { Bounds, Command, EngineContext } from '../engine/index.ts';
 import { MemoryRepository } from '../storage/memory.ts';
 import { GameService } from './game-service.ts';
 import { DEMO_CENTER, makeLocations, seedDemo } from './world.ts';
@@ -33,6 +36,18 @@ const send = (res: ServerResponse, status: number, body: string | Buffer, type: 
 };
 const json = (res: ServerResponse, body: unknown, status = 200) => send(res, status, JSON.stringify(body), 'application/json');
 
+const ID = /^[\w-]{1,40}$/;
+const COMMANDS = new Set(['scan', 'claim', 'deposit', 'upgrade', 'equip']);
+
+async function readJson(req: import('node:http').IncomingMessage, limit = 10_000): Promise<any> {
+  let body = '';
+  for await (const chunk of req) {
+    body += chunk;
+    if (body.length > limit) throw new Error('body too large');
+  }
+  return JSON.parse(body);
+}
+
 function parseBounds(q: URLSearchParams): Bounds | undefined {
   const [south, west, north, east] = ['s', 'w', 'n', 'e'].map((k) => Number(q.get(k)));
   if (![south, west, north, east].every(Number.isFinite) || south > north || west > east) return undefined;
@@ -45,6 +60,12 @@ const server = createServer(async (req, res) => {
   try {
     if (p === '/' || p === '/index.html') {
       return send(res, 200, await readFile(path.join(ROOT, 'public/index.html')), 'text/html; charset=utf-8');
+    }
+    if (p === '/editor') {
+      return send(res, 200, await readFile(path.join(ROOT, 'public/editor.html')), 'text/html; charset=utf-8');
+    }
+    if (/^\/location\/[\w-]+$/.test(p)) {
+      return send(res, 200, await readFile(path.join(ROOT, 'public/location.html')), 'text/html; charset=utf-8');
     }
 
     if (p.endsWith('.ts')) {
@@ -64,6 +85,10 @@ const server = createServer(async (req, res) => {
       return json(res, { worldSeed: WORLD_SEED, center: DEMO_CENTER, now: Date.now() });
     }
 
+    if (p === '/api/locations') { // dev: quick switching on the location page
+      return json(res, [...locations.values()].map(({ id, name, type, tier, traits }) => ({ id, name, type, tier, traits })));
+    }
+
     if (p === '/api/map') {
       const bounds = parseBounds(url.searchParams);
       if (!bounds) return json(res, { error: 'expected s, w, n, e query params' }, 400);
@@ -72,10 +97,26 @@ const server = createServer(async (req, res) => {
 
     const loc = p.match(/^\/api\/location\/([\w-]+)$/);
     if (loc) {
-      const scene = await game.locationPage(loc[1]);
+      const viewer = url.searchParams.get('player');
+      const scene = await game.locationPage(loc[1], viewer && ID.test(viewer) ? viewer : undefined);
       if (!scene) return json(res, { error: 'unknown location' }, 404);
       const { terrain: _terrain, ...rest } = scene; // the client can regenerate terrain from the seed
       return json(res, rest);
+    }
+
+    const base = p.match(/^\/api\/base\/([\w-]+)$/);
+    if (base) return json(res, (await game.basePage(base[1])) ?? null);
+
+    const player = p.match(/^\/api\/player\/([\w-]+)$/);
+    if (player) return json(res, await game.playerPage(player[1]));
+
+    if (p === '/api/command' && req.method === 'POST') {
+      // DEV ONLY – a real deployment authenticates the player and routes scans through game.scanQr.
+      const { playerId, command } = await readJson(req);
+      if (typeof playerId !== 'string' || !ID.test(playerId) || !COMMANDS.has(command?.type)) {
+        return json(res, { ok: false, error: 'bad request' }, 400);
+      }
+      return json(res, await game.execute(playerId, command as Command));
     }
 
     if (p === '/api/stats') return json(res, repo.stats);
@@ -88,4 +129,12 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => console.log(`QR Empire dev server → http://localhost:${PORT}`));
+server.listen(PORT, () => {
+  console.log(`QR Empire dev server → http://localhost:${PORT}`);
+  // also reachable from other devices on the same network (phone on Wi-Fi):
+  for (const list of Object.values(networkInterfaces())) {
+    for (const a of list ?? []) {
+      if (a.family === 'IPv4' && !a.internal && !a.address.startsWith('169.254')) console.log(`  on your network → http://${a.address}:${PORT}`);
+    }
+  }
+});

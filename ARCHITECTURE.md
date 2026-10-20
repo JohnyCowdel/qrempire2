@@ -39,6 +39,12 @@
 
 ## Running locally
 - `npm run dev` → http://localhost:5173 (world map; restarts on file changes, in-memory state)
+- Location page: http://localhost:5173/location/<id> (or "Open location →" in a map popup).
+  3D (three.js) with an RTS camera; buildings/characters are primitives unless an asset URL is
+  set in `STRUCTURE_ASSETS` / `NPC_ASSETS` (src/client/location-view.ts).
+  Terrain, decorations and NPC movement are generated in the browser from the world seed;
+  the server only supplies game state and runs commands. `POST /api/command` is DEV ONLY
+  (no auth, the "Claim" button skips the QR/GPS check).
 - `npm run sim -- --verify` → headless balance/cost simulation
 - The dev server serves `src/engine` and `src/client` to the browser with types stripped
   (`node:module` `stripTypeScriptTypes`), so the client runs the exact same engine code. No bundler.

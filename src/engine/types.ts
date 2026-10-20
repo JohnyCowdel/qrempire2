@@ -1,6 +1,6 @@
 // State shapes. These are the ONLY things persisted. Each top-level aggregate
 // (player, base, region) is one document = one read / one write.
-import type { BuildingKind, LocationType, ResourceKind, Slot, StatKind } from './content.ts';
+import type { BuildingKind, LocationTrait, LocationType, ResourceKind, Slot, StatKind } from './content.ts';
 
 export type Id = string;
 export type Millis = number;
@@ -18,6 +18,7 @@ export interface LocationDef extends LatLng {
   name: string;
   type: LocationType;
   tier: 1 | 2 | 3;
+  traits: LocationTrait[]; // terrain characteristics (see LOCATION_TRAITS)
 }
 
 /** A 3D asset (e.g. STL) placed on the world map. Static content, like LocationDef. */

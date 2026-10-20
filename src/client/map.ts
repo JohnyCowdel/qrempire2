@@ -217,7 +217,8 @@ map.on('load', () => {
       `<div style="color:#888;margin-bottom:4px">${type?.name ?? scene.location.type}</div>` +
       (scene.ownerId ? `Owner: <b style="color:${ownerColor(scene.ownerId)}">${scene.ownerId}</b>` : 'Unclaimed – scan the QR code here to claim it') +
       (buildings.length ? `<ul>${buildings.map((b: any) => `<li>${b.label} lvl ${b.level}</li>`).join('')}</ul>` : '') +
-      `<div style="color:#888;margin-top:4px">${scene.npcs.length} creatures roam here</div>`;
+      `<div style="color:#888;margin-top:4px">${scene.npcs.length} creatures roam here</div>` +
+      `<div style="margin-top:6px"><a href="/location/${encodeURIComponent(scene.location.id)}">Open location →</a></div>`;
     new maplibregl.Popup().setLngLat(f.geometry.coordinates).setHTML(html).addTo(map);
   };
   map.on('click', 'location-icons', openLocationPopup);
